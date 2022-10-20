@@ -1,0 +1,35 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+    "name": "ayria",
+    "license": "MIT",
+    "version": "0.97",
+
+    "dependencies": [
+        {
+            "name": "ctre",
+            "platform": "windows & static"
+        },
+        {
+            "name": "openssl",
+            "platform": "windows & static"
+        },
+        {
+            "name": "lz4",
+            "platform": "windows & static"
+        },
+        {
+            "name": "nlohmann-json",
+            "platform": "windows & static"
+        },
+        {
+            "name": "fmt",
+            "platform": "windows & static"
+        },
+        {
+            "name": "mimalloc",
+            "platform": "windows & static",
+            "features": [ "override" ]
+        }
+    ]
+
+}
