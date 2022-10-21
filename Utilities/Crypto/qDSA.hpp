@@ -1128,8 +1128,8 @@ namespace qDSA
         const auto Q = [&]()
         {
             Blob_t Local; Local.reserve(16 + 16 + 32 + Buffer.size());
-            Local.append(PZ.Raw);
-            Local.append(PW.Raw);
+            Local.append(PZ.Raw.data(), PZ.Raw.size());
+            Local.append(PW.Raw.data(), PW.Raw.size());
             Local.append(Publickey);
             Local.append(Buffer);
 

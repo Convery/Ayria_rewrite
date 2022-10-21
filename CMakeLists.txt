@@ -10,7 +10,7 @@ else()
     set(CMAKE_TOOLCHAIN_FILE "./vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 endif()
 
-# Override VCPKG's dynamic linking' 
+# Override VCPKG's dynamic linking
 if (NOT VCPKG_TARGET_TRIPLET MATCHES "-static$")
     set(VCPKG_TARGET_TRIPLET "${VCPKG_TARGET_TRIPLET}-static")
 endif()

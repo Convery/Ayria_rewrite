@@ -61,6 +61,8 @@ static unsigned __stdcall Backgroundthread(void *)
 // Export functionality to the plugins.
 extern "C" EXPORT_ATTR void __cdecl Createperiodictask(void(__cdecl * Callback)(), unsigned int PeriodMS)
 {
+    assert(PeriodMS && Callback);
+
     if (PeriodMS && Callback) [[likely]]
         Enqueuetask(Callback, PeriodMS);
 }
