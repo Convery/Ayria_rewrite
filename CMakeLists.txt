@@ -10,6 +10,11 @@ else()
     set(CMAKE_TOOLCHAIN_FILE "./vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 endif()
 
+# Override VCPKG's dynamic linking' 
+if (NOT VCPKG_TARGET_TRIPLET MATCHES "-static$")
+    set(VCPKG_TARGET_TRIPLET "${VCPKG_TARGET_TRIPLET}-static")
+endif()
+
 # Convery (tcn@ayria.se)
 project(AYRIA)
 
@@ -86,8 +91,8 @@ else()
 endif()
 
 # Try to add the lib directories based on a required package.
-find_library(STD_LIB_RAW libssl.lib)
-find_path(STD_INC openssl/ssl.h)
+find_library(STD_LIB_RAW libssl.lib HINTS ${PROJECT_SOURCE_DIR})
+find_path(STD_INC openssl/ssl.h  HINTS ${PROJECT_SOURCE_DIR})
 get_filename_component(STD_LIB ${STD_LIB_RAW} DIRECTORY)
 include_directories(${STD_INC})
 link_directories(${STD_LIB})
