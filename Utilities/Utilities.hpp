@@ -199,6 +199,7 @@
     #else
     inline void setThreadname(std::string_view Name)
     {
+        static_asseert(false, "Not implemented.");
     }
     #endif
 
