@@ -13,6 +13,7 @@ namespace AyriaAPI
     // To allow for breaking changes later.
     namespace V1
     {
+
         struct Account_t
         {
             std::u8string Publickey;    // Base58 encoded qDSA::Publickey_t
@@ -305,11 +306,52 @@ namespace AyriaAPI
             }
         };
 
+        // 112 bytes + payload on line.
+        struct Syncpacket_t
+        {
+            cmp::Array_t<uint8_t, 32> Publickey;
+            cmp::Array_t<uint8_t, 64> Signature;
+
+            // VVV Singned data VVV
+            int64_t Timestamp;
+
+            uint8_t Reserved;
+            uint8_t Version;
+            uint8_t Flags;
+            uint8_t Type;
+
+            Bytebuffer_t Data;
+
+            // Helper to construct from a SELECT * query.
+            static Syncpacket_t Construct(const std::u8string &Publickey, const std::u8string &Signature,
+                int64_t Timestamp, uint8_t Reserved, uint8_t Version, uint8_t Flags, uint8_t Type, const Blob_t &Data)
+            {
+                return { Base58::Decode(Publickey), Base58::Decode(Signature), Timestamp, Reserved, Version, Flags, Type, Bytebuffer_t(Data) };
+            }
+        };
+
+        void CreateSYNC()
+        {
+            constexpr auto Syncpacket =
+                "CREATE TABLE IF NOT EXISTS Syncpacket ("
+                "Publickey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Signature TEXT, "
+
+                "Timestamp INTEGER, "
+                "Reserved INTEGER, "
+                "Version INTEGER, "
+                "Flags INTEGER, "
+                "Type INTEGER, "
+
+                "Data BLOB,"
+                "UNIQUE (Publickey, Signature) );";
+        }
+
         void CreateLFS()
         {
             constexpr auto Fileheader =
                 "CREATE TABLE IF NOT EXISTS Fileheader ("
-                "OwnerID TEXT, "
+                "OwnerID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
                 "FileID INTEGER PRIMARY KEY, "
                 "Filesize INTEGER, "
                 "Checksum INTEGER );";
@@ -337,6 +379,80 @@ namespace AyriaAPI
                 "FileID INTEGER PRIMARY KEY REFERENCES Fileheader(FileID) ON DELETE CASCADE, "
                 "Compressedfile BLOB );";
 
+        }
+
+        void Createclient()
+        {
+            constexpr auto Account =
+                "CREATE TABLE IF NOT EXISTS Account ("
+                "Publickey TEXT PRIMARY KEY, "
+                "Firstseen INTEGER, "
+                "Lastseen INTEGER, "
+                "ShortID INTEGER );";
+
+            constexpr auto Clientinfo =
+                "CREATE TABLE IF NOT EXISTS Clientinfo ("
+                "Publickey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "ShortID INTEGER REFERENCES Account(ShortID), "
+
+                "Region INTEGER, "
+                "GameID INTEGER, "
+                "ModID INTEGER, "
+
+                "Clientstate INTEGER, "
+                "Username TEXT, "
+                "AvatarID INTEGER, "
+
+                "Reputation INTEGER, "
+                "Clienttype INTEGER );";
+
+            constexpr auto Clientrelation =
+                "CREATE TABLE IF NOT EXISTS Clientrelation ("
+                "SourceID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "TargetID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Flags INTEGER, "
+                "PRIMARY KEY (SourceID, TargetID) );";
+
+            constexpr auto Clientpresence =
+                "CREATE TABLE IF NOT EXISTS Clientpresence ("
+                "Publickey TEXT PRIMARY KEY REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Category INTEGER, "
+                "Keys BLOB, Values BLOB );";
+
+            constexpr auto Clientmessage =
+                "SourceID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "TargetID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Messagetype INTEGER, "
+                "Sent INTEGER, Received INTEGER, "
+                "B85Message TEXT );";
+        }
+
+        void Createserver()
+        {
+            constexpr auto Serverheader =
+                "CREATE TABLE IF NOT EXISTS Serverheader ("
+                "Publickey TEXT PRIMARY KEY REFERENCES Account(Publickey) ON DELETE CASCADE, "
+
+                "Gameflags INTEGER, "
+                "Serverflags INTEGER, "
+                "Servername TEXT, Mapname TEXT, "
+                "Playercount INTEGER, Playerlimit INTEGER, "
+
+                "IPAddress TEXT, Ports INTEGER );";
+
+            constexpr auto Serverdata =
+                "CREATE TABLE IF NOT EXISTS Serverdata ("
+                "Publickey TEXT PRIMARY KEY REFERENCES Serverheader(Publickey) ON DELETE CASCADE, "
+
+                "Infokeys BLOB, Infovalues BLOB, "
+                "Tagkeys BLOB, Tagvalues BLOB );";
+
+            constexpr auto Playerdata =
+                "CREATE TABLE IF NOT EXISTS Playerdata ("
+                "Serverkey TEXT REFERENCES Serverheader(Publickey) ON DELETE CASCADE, "
+                "Clientkey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Keys BLOB, Values BLOB, "
+                "PRIMARY KEY (Serverkey, Clientkey) );";
         }
 
         /*

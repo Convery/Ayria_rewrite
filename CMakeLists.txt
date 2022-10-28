@@ -4,14 +4,14 @@ cmake_minimum_required(VERSION 3.11)
 list(APPEND VCPKG_FEATURE_FLAGS "versions")
 
 # Overide the submodule install with VCPKG_ROOT
-if(DEFINED ENV{VCPKG_ROOT})
+if (DEFINED ENV{VCPKG_ROOT})
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 else()
     set(CMAKE_TOOLCHAIN_FILE "./vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 endif()
 
 # Override VCPKG's dynamic linking
-if (NOT VCPKG_TARGET_TRIPLET MATCHES "-static$")
+if (NOT VCPKG_TARGET_TRIPLET STREQUAL "" AND NOT VCPKG_TARGET_TRIPLET MATCHES "-static$")
     set(VCPKG_TARGET_TRIPLET "${VCPKG_TARGET_TRIPLET}-static")
 endif()
 
