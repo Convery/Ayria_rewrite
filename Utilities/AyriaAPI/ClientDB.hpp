@@ -242,13 +242,13 @@ namespace AyriaAPI
 
             uint64_t GroupID;
             uint32_t Messagetype;       // WW32("myType")
-            int64_t Sent, Received;     // Timestamps.
+            int64_t Sent;               // Timestamp, matches syncpacket.
             std::u8string B85Message;
 
             // Helper to construct from a SELECT * query.
-            static Groupmessage_t Construct(const std::u8string &SenderID, uint64_t GroupID, uint32_t Messagetype, int64_t Sent, int64_t Received, const std::u8string &B85Message)
+            static Groupmessage_t Construct(const std::u8string &SenderID, uint64_t GroupID, uint32_t Messagetype, int64_t Sent, const std::u8string &B85Message)
             {
-                return { SenderID, GroupID, Messagetype, Sent, Reveived, B85Message };
+                return { SenderID, GroupID, Messagetype, Sent, B85Message };
             }
         };
 
@@ -314,7 +314,6 @@ namespace AyriaAPI
 
             // VVV Singned data VVV
             int64_t Timestamp;
-
             uint8_t Reserved;
             uint8_t Version;
             uint8_t Flags;
@@ -455,160 +454,53 @@ namespace AyriaAPI
                 "PRIMARY KEY (Serverkey, Clientkey) );";
         }
 
-        /*
+        void Creategroups()
+        {
+            constexpr auto Guild =
+                "CREATE TABLE IF NOT EXISTS Guild ("
+                "Ownerkey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "GroupID INTEGER PRIMARY KEY, "
+                "Friendlyname TEXT, "
+                "Grouptag TEXT, "
+                "Moderators BLOB );";
 
-            Clientinfo
-            {
-                Publickey TEXT PRIMARY,
-                Timestamp INTEGER,
+            constexpr auto Lobby =
+                "CREATE TABLE IF NOT EXISTS Lobby ("
+                "Ownerkey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Serverkey TEXT REFERENCES Serverheader(Publickey) ON DELETE CASCADE, "
+                "GroupID INTEGER PRIMARY KEY, "
+                "Flags INTEGER, Grouptype INTEGER, "
+                "Moderators BLOB );";
 
-                // HWID, Web, Temporal (server)
-                Clienttype INTEGER, // Enum
+            constexpr auto Groupinfo =
+                "CREATE TABLE IF NOT EXISTS Groupinfo ("
+                "GroupID INTEGER PRIMARY KEY, "
+                "Groupkeys BLOB, Groupvalues BLOB, "
+                "Memberkeys BLOB, Membervalues BLOB );";
 
-                // Optional?
-                Region INTEGER,     // INT(LAT) << 16 | (INT(LONG) & 16)
+            constexpr auto Groupmember =
+                "CREATE TABLE IF NOT EXISTS Groupmember ("
+                "Memberkey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Moderatorkey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Signature TEXT, "
+                "GroupID INTEGER );";
+        }
 
-                // Game information.
-                ShortID INTEGER,    // WW32(PK) << 32 | (WW64(PK) >> 32)
-                GameID INTEGER,     // Provided by platformwrapper.
-                ModID INTEGER,      // Provided by plugins.
+        void Createmessaging()
+        {
+            constexpr auto Groupmessage =
+                "CREATE TABLE IF NOT EXISTS Groupmessage ("
+                "SenderID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "GroupID INTEGER, Messagetype INTEGER, Sent INTEGER,"
+                "B85Message TEXT );";
 
-                // Social.
-                Username TEXT,
-                AvatarID INTEGER,   // LFS FileID
-                Userstate INTEGER,  // Enum
-
-                // Anticheat
-                Reputation INTEGER
-            }
-
-            Clientrelation
-            {
-                SourceID TEXT,          // Source considers target {flags}
-                TargetID TEXT,
-                Flags INTEGER           // isFriend, isBlocked, isFollowing
-
-                PK(SourceID, TargetID)
-            }
-
-            // Needs a separate row for each.
-            Clientpresence
-            {
-                Publickey TEXT,
-                Category INTEGER,       // WW32("something")
-
-                Keys BLOB,              // Array of strings, sizeof(Keys) == sizeof(Values)
-                Values BLOB,
-
-                PK(Publickey, Category)
-            }
-
-            */
-            /*
-
-            // Matchmaking
-            Serverheader
-            {
-                Publickey TEXT PRIMARY,
-
-                Serverflags INTEGER,    // isDedicated, isSecure, isPasswordprotected
-                Gameflags INTEGER,      // Game dependant.
-
-                // Optional
-                Servername TEXT,
-                Mapname TEXT,
-
-                IPAddress TEXT,         // IPv4 or IPv6
-                Ports INTEGER,          // Lower 16 bits for game-port, upper 48 is game-dependant.
-
-                Playercount INTEGER,
-                Playerlimit INTEGER
-            }
-            Serverdata
-            {
-                Publickey TEXT PRIMARY,
-
-                Gameinfo BLOB, // Array of {Key, Value}
-                Gametags BLOB, // Array of {Key, Value}
-            }
-            Playerdata
-            {
-                ServerID TEXT,
-                PlayerID TEXT,
-
-                Keyvalues BLOB, // Array of {Key, Value}
-
-                PK(ServerID, PlayerID)
-            }
-
-            */
-        /*
-
-            // Groups
-            Guild
-            {
-                OwnerID TEXT PRIMARY,
-
-                Friendlyname TEXT,
-                Grouptag TEXT,
-
-                Moderators BLOB,    // Array of PKs
-            }
-            Lobby
-            {
-                OwnerID TEXT PRIMARY,
-                ServerID TEXT,
-
-                Flags INTEGER,      // isJoinable, isPublic, isChatting
-                Grouptype INTEGER,  // WW32("something")
-                Memberlimit INTEGER,
-            }
-            Lobbydata
-            {
-                OwnerID TEXT PRIMARY,
-                Groupdata BLOB,     // Tuple of { Key, Value }
-                Memberdata BLOB     // Tuple of { ShortID, Key, Value }
-            }
-
-            */
-/*
-
-            // LFS
-            Fileheader
-            {
-                FileID INTEGER PRIMARY,     // WW32(PK) << 32 | WW32(Filepath)
-                OwnerID TEXT PRIMARY,       // Creator PK
-
-                Filesize INTEGER,
-                Checksum INTEGER,
-            }
-            Filemetadata
-            {
-                FileID INTEGER PRIMARY,     // WW32(PK) << 32 | WW32(Filepath)
-                Category INTEGER,           // WW32("something")
-
-                Creationdate INTEGER,
-                Modifieddate INTEGER,
-
-                Title TEXT,
-                Filename TEXT,
-                Description TEXT,
-
-                Visibility INTEGER, // Enum
-                Tags BLOB,          // Array of string-string pairs.
-
-                // FileIDs if provided, top 32 bits must match FileID
-                MetadataID  INTEGER,
-                PreviewID INTEGER,
-            }
-            Filedata
-            {
-                FileID INTEGER PRIMARY,     // WW32(PK) << 32 | WW32(Filepath)
-                BLOB Compressedfile
-            }
-        */
-
-
+            constexpr auto Clientmessage =
+                "CREATE TABLE IF NOT EXISTS Clientmessage ("
+                "SenderID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "TargetID TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
+                "Messagetype INTEGER, Sent INTEGER,"
+                "B85Message TEXT );";
+        }
     }
 
 }
