@@ -69,7 +69,7 @@
     }
 
     // for (const auto &[Index, Value] : Enumerate({ 1, 2, 3, 4 })) = { {0, 1}, {1, 2}, ... }
-    template <typename T, typename Iter = decltype(std::declval<std::initializer_list<T>>().begin())>
+    template <typename T, typename Iter = decltype(std::declval<std::vector<T>>().begin())>
     constexpr auto Enumerate(std::initializer_list<T> &&Args, size_t Start = 0)
     {
         // This should be optimized away..
@@ -85,13 +85,13 @@
         struct Wrapper_t
         {
             size_t Start;
-            std::initializer_list<T> Iterable;
+            std::vector<T> Iterable;
 
             auto begin() { return Countediterator_t{ Start, Iterable.size(), Iterable.begin() }; }
             static auto end() { return std::default_sentinel_t{}; }
         };
 
-        return Wrapper_t(Start, Args);
+        return Wrapper_t{ Start, Args };
     }
 
     // for (const auto &x : Range(1, 100, 2)) = { 1, 3, 5 ... }
@@ -105,7 +105,7 @@
             Steptype Step;
 
             bool operator !=(const std::default_sentinel_t &Right) const { return Current != Limit; }
-            auto operator *() const { return Current; }
+            const auto operator *() const { return Current; }
             void operator ++()
             {
                 if constexpr (std::is_arithmetic_v<Valuetype>) Current += Step;
