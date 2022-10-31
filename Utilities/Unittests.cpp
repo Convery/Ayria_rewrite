@@ -225,8 +225,28 @@ int main()
         return true;
     }();
 
-    std::vector a{ 1, 2, 3 }, b{ 4, 5, 6 }, c{ 7, 8, 9 };
-    for (auto [A, B, C] : Zip(a, b, c)) { A = C; }
+    // Utilities.hpp
+    [[maybe_unused]] const auto Utilitiestest = []() -> bool
+    {
+        // Zip a range with another.
+        std::vector a{ 1, 2, 3 }, b{ 4, 5, 6, 7, 8, 9 }, c{ 10, 11, 12 };
+        for (auto [A, B, C] : Zip(a, b, c)) { A = C; }
+        if (a != c) printf("BROKEN: Zip utility\n");
+
+        // Enumeration.
+        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }, 1))
+        {
+            if (Index != Item) printf("BROKEN: Enum utility\n");
+        }
+
+        // Positive integers < 6..
+        size_t Counter = 0;  // = { 0, 2, 4 }
+        for (const auto Int : Range(0, 6, 2)) Counter += Int;
+        if (Counter != 6) printf("BROKEN: Range utility\n");
+
+
+        return true;
+    }();
 
     printf("Testing done..\n");
     return 0;
