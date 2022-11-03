@@ -195,13 +195,14 @@ namespace AyriaAPI
 
             Flags_t Flags;
             uint32_t Grouptype;
+            uint32_t Maxmembers;
             std::vector<std::u8string> Moderators;
 
             // Helper to construct from a SELECT * query.
-            static Lobby_t Construct(const std::u8string &OwnerID, const std::u8string &Serverkey, uint64_t GroupID, uint8_t Flags, uint32_t Grouptype, const std::vector<std::u8string> &Moderators)
+            static Lobby_t Construct(const std::u8string &OwnerID, const std::u8string &Serverkey, uint64_t GroupID, uint8_t Flags, uint32_t Grouptype, uint32_t Maxmembers, const std::vector<std::u8string> &Moderators)
             {
                 if (GroupID == NULL) GroupID = Hash::WW64(OwnerID + u8"Lobby");
-                return { OwnerID, Serverkey, GroupID, Flags_t{.Raw = Flags}, Grouptype, Moderators };
+                return { OwnerID, Serverkey, GroupID, Flags_t{.Raw = Flags}, Grouptype, Maxmembers, Moderators };
             }
         };
 
@@ -469,7 +470,7 @@ namespace AyriaAPI
                 "Ownerkey TEXT REFERENCES Account(Publickey) ON DELETE CASCADE, "
                 "Serverkey TEXT REFERENCES Serverheader(Publickey) ON DELETE CASCADE, "
                 "GroupID INTEGER PRIMARY KEY, "
-                "Flags INTEGER, Grouptype INTEGER, "
+                "Flags INTEGER, Grouptype INTEGER, Maxmembers INTEGER, "
                 "Moderators BLOB );";
 
             constexpr auto Groupinfo =

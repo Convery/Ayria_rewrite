@@ -91,11 +91,56 @@ namespace sqlite
             case SQLITE_BLOB:
                 if constexpr (Blob_t<T>)
                 {
-                    const auto Size = sqlite3_column_bytes(Statement, Index);
-                    const auto Buffer = (typename T::value_type *)sqlite3_column_blob(Statement, Index);
+                    // Special case, blob of strings, best-effort guessing.
+                    if constexpr (!std::is_same_v<T, ::Blob_t> && cmp::isDerived<typename T::value_type, std::basic_string>)
+                    {
+                        const auto Size = sqlite3_column_bytes(Statement, Index);
+                        const auto Buffer = (typename T::value_type::value_type *)sqlite3_column_blob(Statement, Index);
+                        
+                        // Maybe it's a Bytebuffer?
+                        if (*Buffer == Bytebuffer_t::toID<T>)
+                        {
+                            Bytebuffer_t Reader(Buffer, Size);
+                            return Reader.Read<T>();
+                        }
 
-                    const std::span Temp(Buffer, Size / sizeof(typename T::value_type));
-                    return T(Temp.begin(), Temp.end());
+                        // Or a null-terminated list.
+                        else if (Buffer[std::max(1, Size) - 1] == typename T::value_type::value_type(0))
+                        {
+                            std::basic_string_view<typename T::value_type::value_type> Input(Buffer, Size);
+                            T Result{};
+
+                            while (!Input.empty())
+                            {
+                                const auto Substring = Input.substr(0, Input.find((typename T::value_type::value_type)0));
+                                Result.emplace_back(Substring.data(), Substring.size());
+                                Input.remove_prefix(Substring.size() + 1);
+                            }
+
+                            return Result;
+                        }
+
+                        // Else return as a single string and let the user figure it out.
+                        else
+                        {
+                            T Result{};
+                            Result.emplace_back(Buffer, Size);
+                            return Result;
+                        }
+                    }
+
+                    // Else as an array.
+                    else
+                    {
+                        // Warn on silly types..
+                        static_assert(std::is_pod_v<typename T::value_type>, "Not sure how to serialize this..");
+
+                        const auto Size = sqlite3_column_bytes(Statement, Index);
+                        const auto Buffer = (typename T::value_type*)sqlite3_column_blob(Statement, Index);
+
+                        const std::span Temp(Buffer, Size / sizeof(typename T::value_type));
+                        return T(Temp.begin(), Temp.end());
+                    }
                 }
                 break;
         }

@@ -14,37 +14,37 @@
 #include <memory>
 #include <vector>
 
-// Type identifiers for the stream.
-enum Datatypes_t : uint8_t
-{
-    BB_NONE = 0,        // Padding / NOP.
-
-    BB_BLOB,            // uint8_t
-    BB_ASCIISTRING,     // char
-    BB_UTF8STRING,      // char8_t
-    BB_UNICODESTRING,   // wchar_t
-
-    // POD.
-    BB_BOOL,
-    BB_SINT8,
-    BB_UINT8,
-    BB_SINT16,
-    BB_UINT16,
-    BB_SINT32,
-    BB_UINT32,
-    BB_SINT64,
-    BB_UINT64,
-    BB_FLOAT32,
-    BB_FLOAT64,
-
-    BB_ARRAY = 100, // Arraytypes, e.g. 100 + BB_UINT16 = vector<uint16_t>
-
-    BB_MAX
-};
-
 // 32 bytes on x64, 16 on x86.
 struct Bytebuffer_t
 {
+    // Type identifiers for the stream.
+    enum Datatypes_t : uint8_t
+    {
+        BB_NONE = 0,        // Padding / NOP.
+
+        BB_BLOB,            // uint8_t
+        BB_ASCIISTRING,     // char
+        BB_UTF8STRING,      // char8_t
+        BB_UNICODESTRING,   // wchar_t
+
+        // POD.
+        BB_BOOL,
+        BB_SINT8,
+        BB_UINT8,
+        BB_SINT16,
+        BB_UINT16,
+        BB_SINT32,
+        BB_UINT32,
+        BB_SINT64,
+        BB_UINT64,
+        BB_FLOAT32,
+        BB_FLOAT64,
+
+        BB_ARRAY = 100, // Arraytypes, e.g. 100 + BB_UINT16 = vector<uint16_t>
+
+        BB_MAX
+    };
+
     // Default to owning mode if nothing else is specified..
     std::variant<const uint8_t *, uint8_t *> Internalbuffer{ (uint8_t *)nullptr };
     size_t Internaliterator{};
