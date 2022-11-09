@@ -238,6 +238,10 @@ int main()
         {
             if (Index != Item) printf("BROKEN: Enum utility\n");
         }
+        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }))
+        {
+            if (Index != (Item - 1)) printf("BROKEN: Enum utility\n");
+        }
 
         // Positive integers < 6..
         size_t Counter = 0;  // = { 0, 2, 4 }

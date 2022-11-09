@@ -64,7 +64,7 @@ BOOLEAN __stdcall DllMain(HINSTANCE hDllHandle, DWORD nReason, LPVOID lpvReserve
         DisableThreadLibraryCalls(hDllHandle);
 
         // Initialize the background tasks.
-        Backend::Taskrunner::runStartup();
+        Backend::Tasks::Initialize();
 
         // If injected, we can't hook. So just load all plugins directly.
         if (lpvReserved == NULL)
