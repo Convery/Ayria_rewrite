@@ -206,14 +206,19 @@ namespace Hash
             return ~CRC;
         }
 
+        // BZIP2 CRC32
         constexpr uint32_t CRC32A(std::span<const uint8_t> Input)
         {
             return CRC32<0x04C11DB7, false>(Input, 0xFFFFFFFF);
         }
+        
+        // IEEE CRC32
         constexpr uint32_t CRC32B(std::span<const uint8_t> Input)
         {
             return CRC32<0xEDB88320, true>(Input, 0xFFFFFFFF);
         }
+        
+        // Tencent CRC32
         constexpr uint32_t CRC32T(std::span<const uint8_t> Input)
         {
             return CRC32<0xEDB88320, true>(Input, ~uint32_t(Input.size()));
