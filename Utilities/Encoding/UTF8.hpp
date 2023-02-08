@@ -7,9 +7,7 @@
 */
 
 #pragma once
-#include <cassert>
-#include <cstdint>
-#include "../Constexprhelpers.hpp"
+#include <Utilities/Utilities.hpp>
 
 namespace Encoding
 {
@@ -54,6 +52,10 @@ namespace Encoding
         }
 
         return true;
+    }
+    template <typename T> constexpr bool isASCII(const std::basic_string<T> &Input)
+    {
+        return isASCII(std::span(Input));
     }
 
     // Passthrough for easier templating.

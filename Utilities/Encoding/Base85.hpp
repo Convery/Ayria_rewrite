@@ -9,13 +9,23 @@
 */
 
 #pragma once
-#include "../Utilities.hpp"
+#include <Utilities/Utilities.hpp>
 
 namespace Base85
 {
     // We can only introduce padding for encoding.
-    constexpr size_t Encodesize(size_t N) { return N * 5 / 4 + !!((N * 5 / 4) % 5); }
-    constexpr size_t Decodesize(size_t N) { return N * 4 / 5; }
+    constexpr size_t Encodesize(size_t N)
+    {
+        if (N == std::dynamic_extent)
+            return std::dynamic_extent;
+        return N * 5 / 4 + !!((N * 5 / 4) % 5);
+    }
+    constexpr size_t Decodesize(size_t N)
+    {
+        if (N == std::dynamic_extent)
+            return std::dynamic_extent;
+        return N * 4 / 5;
+    }
 
     // Works on indexes.
     namespace Internal
@@ -47,10 +57,10 @@ namespace Base85
             return std::bit_cast<std::array<uint8_t, 5>>(Result);
         }
 
-        // Array_t at compiletime, Vector_t at runtime.
-        template <cmp::Byte_t T, size_t N> requires(N != std::dynamic_extent) constexpr auto Encode(const cmp::Container_t<T, N> &Input)
+        // std::array at compiletime, std::basic_string at runtime.
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> requires(N != std::dynamic_extent) constexpr auto Encode(std::span<const T, N> Input)
         {
-            cmp::Array_t<uint8_t, Encodesize(N)> Result{};
+            std::array<uint8_t, Encodesize(N)> Result{};
             const auto Remainder = N & 3;
             const auto Count = N / 4;
 
@@ -70,9 +80,9 @@ namespace Base85
 
             return Result;
         }
-        template <cmp::Byte_t T, size_t N> requires(N == std::dynamic_extent) constexpr auto Encode(const cmp::Container_t<T, N> &Input)
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> requires(N == std::dynamic_extent) constexpr auto Encode(std::span<const T, N> Input)
         {
-            cmp::Vector_t<uint8_t> Result(Encodesize(Input.size()));
+            std::basic_string<uint8_t> Result(Encodesize(Input.size()), T{});
             const auto Remainder = Input.size() & 3;
             const auto Count = Input.size() / 4;
 
@@ -93,10 +103,10 @@ namespace Base85
             return Result;
         }
 
-        // Array_t at compiletime, Vector_t at runtime.
-        template <cmp::Byte_t T, size_t N> requires(N != std::dynamic_extent) constexpr auto Decode(const cmp::Container_t<T, N> &Input)
+        // std::array at compiletime, std::basic_string at runtime.
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> requires(N != std::dynamic_extent) constexpr auto Decode(std::span<const T, N> Input)
         {
-            cmp::Array_t<uint8_t, Decodesize(N)> Result{};
+            std::array<uint8_t, Decodesize(N)> Result{};
             const auto Remainder = N % 5;
             const auto Count = N / 5;
 
@@ -110,9 +120,8 @@ namespace Base85
             if constexpr (Remainder > 0)
             {
                 // For partial buffers, a placeholder value of 'u' is needed.
-                std::array<uint8_t, 5> Span{ uint8_t(117), uint8_t(117), uint8_t(117), uint8_t(117), uint8_t(117) };
-                for (size_t i = 0; i < Remainder; ++i)
-                    Span[i] = Input[(Count * 5) + i];
+                std::array<uint8_t, 5> Span{ uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u') };
+                cmp::memcpy(Span.data(), &Input[Count * 5], Remainder);
 
                 const auto Block = Decodeblock(Span);
                 cmp::memcpy(&Result[Count * 4], &Block, Result.size() - Count * 4);
@@ -120,9 +129,9 @@ namespace Base85
 
             return Result;
         }
-        template <cmp::Byte_t T, size_t N> requires(N == std::dynamic_extent) constexpr auto Decode(const cmp::Container_t<T, N> &Input)
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> requires(N == std::dynamic_extent) constexpr auto Decode(std::span<const T, N> Input)
         {
-            cmp::Vector_t<uint8_t> Result(Decodesize(Input.size()));
+            std::basic_string<uint8_t> Result(Decodesize(Input.size()), T{});
             const auto Remainder = Input.size() % 5;
             const auto Count = Input.size() / 5;
 
@@ -136,9 +145,8 @@ namespace Base85
             if (Remainder > 0)
             {
                 // For partial buffers, a placeholder value of 'u' is needed.
-                std::array<uint8_t, 5> Span{ uint8_t(117), uint8_t(117), uint8_t(117), uint8_t(117), uint8_t(117) };
-                for (size_t i = 0; i < Remainder; ++i)
-                    Span[i] = Input[(Count * 5) + i];
+                std::array<uint8_t, 5> Span{ uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u') };
+                cmp::memcpy(Span.data(), &Input[Count * 5], Remainder);
 
                 const auto Block = Decodeblock(Span);
                 cmp::memcpy(&Result[Count * 4], &Block, Result.size() - Count * 4);
@@ -146,12 +154,61 @@ namespace Base85
 
             return Result;
         }
+
+        // The output buffer has enough room to decode inplace.
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> requires(N != std::dynamic_extent) constexpr auto Decode_inplace(std::span<T, N> Input)
+        {
+            const auto Remainder = N % 5;
+            const auto Count = N / 5;
+
+            for (size_t i = 0; i < Count; ++i)
+            {
+                std::array<uint8_t, 5> Span{};
+                cmp::memcpy(Span.data(), &Input[i * 5], 5);
+                cmp::memcpy(&Input[i * 4], Decodeblock(Span));
+            }
+
+            if constexpr (Remainder > 0)
+            {
+                // For partial buffers, a placeholder value of 'u' is needed.
+                std::array<uint8_t, 5> Span{ uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u') };
+                cmp::memcpy(Span.data(), &Input[Count * 5], Remainder);
+
+                const auto Block = Decodeblock(Span);
+                cmp::memcpy(&Input[Count * 4], &Block, Input.size() - Count * 4);
+            }
+
+            return Input.subspan(0, Decodesize(N));
+        }
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> requires(N == std::dynamic_extent) constexpr auto Decode_inplace(std::span<T, N> Input)
+        {
+            const auto Remainder = Input.size() % 5;
+            const auto Count = Input.size() / 5;
+
+            for (size_t i = 0; i < Count; ++i)
+            {
+                std::array<uint8_t, 5> Span{};
+                cmp::memcpy(Span.data(), &Input[i * 5], 5);
+                cmp::memcpy(&Input[i * 4], Decodeblock(Span));
+            }
+
+            if (Remainder > 0)
+            {
+                // For partial buffers, a placeholder value of 'u' is needed.
+                std::array<uint8_t, 5> Span{ uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u'), uint8_t('u') };
+                cmp::memcpy(Span.data(), &Input[Count * 5], Remainder);
+
+                const auto Block = Decodeblock(Span);
+                cmp::memcpy(&Input[Count * 4], &Block, Input.size() - Count * 4);
+            }
+
+            return Input.subspan(0, Decodesize(Input.size()));
+        }
     }
 
     namespace Z85
     {
-        constexpr auto Table = cmp::getBytes(std::array<uint8_t, 85>
-        {
+        constexpr auto Table = std::to_array<uint8_t>({
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
             'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
             'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
@@ -165,7 +222,7 @@ namespace Base85
         });
         constexpr auto Reversetable = []()
         {
-            cmp::Array_t<uint8_t, 94> Result{};
+            std::array<uint8_t, 94> Result{};
 
             for (size_t i = 0; i < Table.size(); ++i)
             {
@@ -177,35 +234,27 @@ namespace Base85
         }();
 
         // Convert between charset and index.
-        template <cmp::Byte_t T, size_t N> constexpr auto toIndex(cmp::Container_t<T, N> &&Input)
+        template <cmp::Byte_t T, size_t N> constexpr auto toIndex(std::span<const T, N> Input)
         {
-            for (auto &Item : Input) Item = Reversetable[size_t(Item) - '!'];
-            return Input;
-        }
-        template <cmp::Byte_t T, size_t N> constexpr auto fromIndex(cmp::Container_t<T, N> &&Input)
-        {
-            for (auto &Item : Input) Item = Table[size_t(Item)];
-            return Input;
-        }
+            std::basic_string<T> Buffer(Input.size(), T{});
 
-        // Array_t at compiletime, Vector_t at runtime.
-        template <cmp::Byte_t T, size_t N> constexpr auto Encode(const cmp::Container_t<T, N> &Input)
-        {
-            return fromIndex(Internal::Encode(Input));
-        }
-        template <cmp::Byte_t T, size_t N> constexpr auto Decode(const cmp::Container_t<T, N> &Input)
-        {
-            return Internal::Decode(toIndex(cmp::Container_t<T, N>{ Input }));
-        }
+            for (size_t i = 0; i < Input.size(); ++i)
+            {
+                Buffer[i] = Reversetable[Input[i] - T{ 33 }];
+            }
 
-        // Dealing with string literals.
-        template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
-        {
-            return Encode(cmp::getBytes(cmp::toArray(Input)));
+            return Buffer;
         }
-        template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
+        template <cmp::Byte_t T, size_t N> constexpr auto fromIndex(std::span<const T, N> Input)
         {
-            return Decode(cmp::getBytes(cmp::toArray(Input)));
+            std::basic_string<T> Buffer(Input.size(), T{});
+
+            for (size_t i = 0; i < Input.size(); ++i)
+            {
+                Buffer[i] = Table[Input[i]];
+            }
+
+            return Buffer;
         }
 
         // Just verify the characters, not going to bother with length.
@@ -225,21 +274,53 @@ namespace Base85
         {
             return isValid(cmp::toArray(Input));
         }
+
+        // Dynamically selects the proper storage type.
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> constexpr auto Encode(std::span<const T, N> Input)
+        {
+            const auto Basic = Internal::Encode(Input);
+            return cmp::Container_t<uint8_t, Encodesize(N)>(fromIndex(std::span(Basic)));
+        }
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> constexpr auto Decode(std::span<const T, N> Input)
+        {
+            auto Normal = toIndex(Input);
+            return cmp::Container_t<uint8_t, Decodesize(N)>(Internal::Decode_inplace(std::span(Normal)));
+        }
+
+        // Generic encoding / decoding.
+        template <cmp::Range_t T> requires(1 == sizeof(typename T::value_type)) constexpr auto Encode(const T &Input)
+        {
+            return Encode(std::span(Input));
+        }
+        template <cmp::Range_t T> requires(1 == sizeof(typename T::value_type)) constexpr auto Decode(const T &Input)
+        {
+            return Decode(std::span(Input));
+        }
+
+        // String literal helper.
+        template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
+        {
+            return Encode(cmp::toArray(Input));
+        }
+        template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
+        {
+            return Decode(cmp::toArray(Input));
+        }
     }
 
     namespace ASCII85
     {
         // ASCII85 supports compression, while not used in our encoder, we might need to decompress it first.
-        template <cmp::Byte_t T, size_t N> constexpr auto isCompressed(const cmp::Container_t<T, N> &Input)
+        template <cmp::Byte_t T, size_t N> constexpr auto isCompressed(const std::span<const T, N> Input)
         {
             return std::ranges::any_of(Input.begin(), Input.end(), [](auto Item)
             {
                 return Item == T('z') || Item == T('y');
             });
         }
-        template <cmp::Byte_t T, size_t N> constexpr auto Decompress(const cmp::Container_t<T, N> &Input)
+        template <cmp::Byte_t T, size_t N> constexpr auto Decompress(const std::span<const T, N> Input)
         {
-            cmp::Vector_t<T> Buffer; Buffer.reserve(Input.size() + 32);
+            std::basic_string<T> Buffer; Buffer.reserve(Input.size() + 32);
             for (auto &Item : Input)
             {
                 if (Item == T('z')) [[unlikely]] Buffer.append(4, uint8_t());
@@ -251,35 +332,27 @@ namespace Base85
         }
 
         // Convert between charset and index.
-        template <cmp::Byte_t T, size_t N> constexpr auto toIndex(cmp::Container_t<T, N> &&Input)
+        template <cmp::Byte_t T, size_t N> constexpr auto toIndex(std::span<const T, N> Input)
         {
-            for (auto &Item : Input) Item = uint8_t(uint8_t(Item) - '!');
-            return Input;
-        }
-        template <cmp::Byte_t T, size_t N> constexpr auto fromIndex(cmp::Container_t<T, N> &&Input)
-        {
-            for (auto &Item : Input) Item = uint8_t(uint8_t(Item) + '!');
-            return Input;
-        }
+            std::basic_string<T> Buffer(Input.size(), T{});
 
-        // Array_t at compiletime, Vector_t at runtime.
-        template <cmp::Byte_t T, size_t N> constexpr auto Encode(const cmp::Container_t<T, N> &Input)
-        {
-            return fromIndex(Internal::Encode(Input));
-        }
-        template <cmp::Byte_t T, size_t N> constexpr auto Decode(const cmp::Container_t<T, N> &Input)
-        {
-            return Internal::Decode(toIndex(cmp::Container_t<T, N>{ Input }));
-        }
+            for (size_t i = 0; i < Input.size(); ++i)
+            {
+                Buffer[i] = Input[i] - T{ 33 };
+            }
 
-        // Dealing with string literals.
-        template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
-        {
-            return Encode(cmp::getBytes(cmp::toArray(Input)));
+            return Buffer;
         }
-        template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
+        template <cmp::Byte_t T, size_t N> constexpr auto fromIndex(std::span<const T, N> Input)
         {
-            return Decode(cmp::getBytes(cmp::toArray(Input)));
+            std::basic_string<T> Buffer(Input.size(), T{});
+
+            for (size_t i = 0; i < Input.size(); ++i)
+            {
+                Buffer[i] = Input[i] + T{ 33 };
+            }
+
+            return Buffer;
         }
 
         // Just verify the characters, not going to bother with length.
@@ -295,12 +368,52 @@ namespace Base85
         {
             return isValid(cmp::toArray(Input));
         }
+
+        // Dynamically selects the proper storage type.
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> constexpr auto Encode(std::span<const T, N> Input)
+        {
+            const auto Basic = Internal::Encode(Input);
+            return cmp::Container_t<uint8_t, Encodesize(N)>(fromIndex(std::span(Basic)));
+        }
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> constexpr auto Decode(std::span<const T, N> Input)
+        {
+            if (!std::is_constant_evaluated())
+            {
+                if (isCompressed(Input))
+                {
+                    Errorprint("ASCII85 compressed string encountered, check your inputs.");
+                    return cmp::Container_t<uint8_t, Decodesize(N)>{};
+                }
+            }
+
+            auto Normal = toIndex(Input);
+            return cmp::Container_t<uint8_t, Decodesize(N)>(Internal::Decode_inplace(std::span(Normal)));
+        }
+
+        // Generic encoding / decoding.
+        template <cmp::Range_t T> requires(1 == sizeof(typename T::value_type)) constexpr auto Encode(const T &Input)
+        {
+            return Encode(std::span(Input));
+        }
+        template <cmp::Range_t T> requires(1 == sizeof(typename T::value_type)) constexpr auto Decode(const T &Input)
+        {
+            return Decode(std::span(Input));
+        }
+
+        // String literal helper.
+        template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
+        {
+            return Encode(cmp::toArray(Input));
+        }
+        template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
+        {
+            return Decode(cmp::toArray(Input));
+        }
     }
 
     namespace RFC1924
     {
-        constexpr auto Table = cmp::getBytes(std::array<uint8_t, 85>
-        {
+        constexpr auto Table = std::to_array<uint8_t>({
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
             'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
             'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
@@ -327,35 +440,27 @@ namespace Base85
         }();
 
         // Convert between charset and index.
-        template <cmp::Byte_t T, size_t N> constexpr auto toIndex(cmp::Container_t<T, N> &&Input)
+        template <cmp::Byte_t T, size_t N> constexpr auto toIndex(std::span<const T, N> Input)
         {
-            for (auto &Item : Input) Item = Reversetable[size_t(Item) - '!'];
-            return Input;
-        }
-        template <cmp::Byte_t T, size_t N> constexpr auto fromIndex(cmp::Container_t<T, N> &&Input)
-        {
-            for (auto &Item : Input) Item = Table[size_t(Item)];
-            return Input;
-        }
+            std::basic_string<T> Buffer(Input.size(), T{});
 
-        // Array_t at compiletime, Vector_t at runtime.
-        template <cmp::Byte_t T, size_t N> constexpr auto Encode(const cmp::Container_t<T, N> &Input)
-        {
-            return fromIndex(Internal::Encode(Input));
-        }
-        template <cmp::Byte_t T, size_t N> constexpr auto Decode(const cmp::Container_t<T, N> &Input)
-        {
-            return Internal::Decode(toIndex(cmp::Container_t<T, N>{ Input }));
-        }
+            for (size_t i = 0; i < Input.size(); ++i)
+            {
+                Buffer[i] = Reversetable[Input[i] - T{ 33 }];
+            }
 
-        // Dealing with string literals.
-        template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
-        {
-            return Encode(cmp::getBytes(cmp::toArray(Input)));
+            return Buffer;
         }
-        template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
+        template <cmp::Byte_t T, size_t N> constexpr auto fromIndex(std::span<const T, N> Input)
         {
-            return Decode(cmp::getBytes(cmp::toArray(Input)));
+            std::basic_string<T> Buffer(Input.size(), T{});
+
+            for (size_t i = 0; i < Input.size(); ++i)
+            {
+                Buffer[i] = Table[Input[i]];
+            }
+
+            return Buffer;
         }
 
         // Just verify the characters, not going to bother with length.
@@ -375,7 +480,42 @@ namespace Base85
         {
             return isValid(cmp::toArray(Input));
         }
+
+        // Dynamically selects the proper storage type.
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> constexpr auto Encode(std::span<const T, N> Input)
+        {
+            const auto Basic = Internal::Encode(Input);
+            return cmp::Container_t<uint8_t, Encodesize(N)>(fromIndex(std::span(Basic)));
+        }
+        template <cmp::Byte_t T, size_t N = std::dynamic_extent> constexpr auto Decode(std::span<const T, N> Input)
+        {
+            auto Normal = toIndex(Input);
+            return cmp::Container_t<uint8_t, Decodesize(N)>(Internal::Decode_inplace(std::span(Normal)));
+        }
+
+        // Generic encoding / decoding.
+        template <cmp::Range_t T> requires(1 == sizeof(typename T::value_type)) constexpr auto Encode(const T &Input)
+        {
+            return Encode(std::span(Input));
+        }
+        template <cmp::Range_t T> requires(1 == sizeof(typename T::value_type)) constexpr auto Decode(const T &Input)
+        {
+            return Decode(std::span(Input));
+        }
+
+        // String literal helper.
+        template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
+        {
+            return Encode(cmp::toArray(Input));
+        }
+        template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
+        {
+            return Decode(cmp::toArray(Input));
+        }
     }
+
+
+
 
     // Default to RFC1924 as string encoding is mostly used in JSON.
     using namespace RFC1924;
