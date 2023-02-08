@@ -1,23 +1,25 @@
 /*
     Initial author: Convery (tcn@ayria.se)
-    Started: 2022-11-09
+    Started: 2023-01-23
     License: MIT
 */
 
-#include "Backend.hpp"
+#include <Ayria.hpp>
 
-namespace Backend::Tasks
+namespace Backend::Backgroundtasks
 {
-    // Tasks are often added via ctor, so a singleton pattern is needed.
-    struct Singleton_t
+    // As constinit is not available for MSVC debugbuilds, a singleton is needed.
+    struct Singleton_t final
     {
-        using Task_t = struct
+        using Taskinfo_t = struct
         {
             uint32_t PeriodMS, LastMS;
             Callback_t Callback;
         };
 
-        Inlinedvector<Task_t, 8> Recurringtasks;
+        Inlinedvector<Taskinfo_t, 8> Recurringtasks;
+        Hashset<Callback_t> Tasklist;
+
         std::vector<Callback_t> Initialtasks;
         std::atomic<bool> doTerminate;
         Spinlock_t Threadsafe;
@@ -33,13 +35,36 @@ namespace Backend::Tasks
     {
         auto &Singleton = getSingleton();
         std::scoped_lock Guard(Singleton.Threadsafe);
-        Singleton.Recurringtasks.emplace_back(PeriodMS, 0, Callback);
+
+        // Prevent duplicates.
+        if (Singleton.Tasklist.insert(Callback).second)
+        {
+            Singleton.Recurringtasks.emplace_back(PeriodMS, 0, Callback);
+        }
     }
     void addStartuptask(Callback_t Callback)
     {
         auto &Singleton = getSingleton();
         std::scoped_lock Guard(Singleton.Threadsafe);
         Singleton.Initialtasks.emplace_back(Callback);
+    }
+
+    // Called from usercode (in or after main).
+    void Initialize()
+    {
+        auto &Singleton = getSingleton();
+        std::scoped_lock Guard(Singleton.Threadsafe);
+
+        // We can not ensure ordering of the tasks.
+        for (const auto &Task : Singleton.Initialtasks) Task();
+
+        // Should only run once, so let the runtime reclaim the memory.
+        Singleton.Initialtasks.clear();
+        Singleton.Initialtasks.shrink_to_fit();
+    }
+    void Terminate()
+    {
+        getSingleton().doTerminate = true;
     }
 
     // Normal-priority thread.
@@ -89,36 +114,10 @@ namespace Backend::Tasks
         }
 
         // Unreachable but some static-analysis get upset.
-        return 1;
+        std::unreachable();
     }
 
-    // Called from usercode (in or after main).
-    void Initialize()
-    {
-        auto &Singleton = getSingleton();
-        std::scoped_lock Guard(Singleton.Threadsafe);
-
-        // We can not ensure ordering of the tasks.
-        for (const auto &Task : Singleton.Initialtasks) Task();
-
-        // Should only run once, so let the runtime reclaim the memory.
-        Singleton.Initialtasks.clear();
-    }
-    void Terminate()
-    {
-        getSingleton().doTerminate = true;
-    }
-
-    // Export functionality to the plugins.
-    extern "C" EXPORT_ATTR void __cdecl Createperiodictask(void(__cdecl * Callback)(), unsigned int PeriodMS)
-    {
-        assert(PeriodMS && Callback);
-
-        if (PeriodMS && Callback) [[likely]]
-            addPeriodictask(Callback, PeriodMS);
-    }
-
-    // Set up the background-thread via Initialize(), also an example of how to add tasks via ctor.
+    // Set up the background-thread via Initialize()
     const struct Startup_t
     {
         Startup_t()
@@ -133,7 +132,7 @@ namespace Backend::Tasks
                 #endif
 
                 // Register for termination if not already provided.
-                std::atexit([]() { Terminate(); });
+                (void)std::atexit([]() { Terminate(); });
             });
         }
     } Startup{};
