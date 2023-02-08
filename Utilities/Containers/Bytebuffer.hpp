@@ -4,15 +4,18 @@
     License: MIT
 
     A simple container prefixing data with a byte-ID.
+    Data is written as little endian.
 */
 
 #pragma once
-#include "../Strings/toHexstring.hpp"
-#include "../Constexprhelpers.hpp"
-#include "../Encoding/UTF8.hpp"
-#include <sstream>
-#include <memory>
-#include <vector>
+#include <Utilities/Utilities.hpp>
+#include "Utilities/Encoding/UTF8.hpp"
+#include "Utilities/Strings/toHexstring.hpp"
+#include "Utilities/Strings/Variadicstring.hpp"
+
+// Unreachable code warning.
+#pragma warning(push)
+#pragma warning(disable : 4702)
 
 // 32 bytes on x64, 16 on x86.
 struct Bytebuffer_t
@@ -67,13 +70,14 @@ struct Bytebuffer_t
     {
         Internaliterator = 0;
     }
-    uint8_t Peek() const noexcept
+
+    [[nodiscard]] uint8_t Peek() const noexcept
     {
         const auto pByte = data(true);
         if (!pByte) return BB_NONE;
         return uint8_t(*pByte);
     }
-    bool isOwning() const noexcept
+    [[nodiscard]] bool isOwning() const noexcept
     {
         return std::holds_alternative<uint8_t *>(Internalbuffer);
     }
@@ -112,7 +116,7 @@ struct Bytebuffer_t
             if (Originalbuffer) std::memcpy(Newbuffer, Originalbuffer, Originalsize);
             std::memset(Newbuffer + Originalsize, 0, Extracapacity);
 
-            Internalbuffer = std::move(Newbuffer);
+            Internalbuffer = Newbuffer;
             Internalsize = Originalsize + Extracapacity;
         }
 
@@ -127,7 +131,7 @@ struct Bytebuffer_t
                 const auto Newbuffer = (uint8_t *)realloc(Originalbuffer, Originalsize + Extracapacity);
                 std::memset(Newbuffer + Originalsize, 0, Extracapacity);
 
-                Internalbuffer = std::move(Newbuffer);
+                Internalbuffer = Newbuffer;
                 Internalsize = Originalsize + Extracapacity;
             }
             else
@@ -135,16 +139,16 @@ struct Bytebuffer_t
                 const auto Newbuffer = (uint8_t *)malloc(Originalsize + Extracapacity);
                 std::memset(Newbuffer + Originalsize, 0, Extracapacity);
 
-                Internalbuffer = std::move(Newbuffer);
+                Internalbuffer = Newbuffer;
                 Internalsize = Originalsize + Extracapacity;
             }
         }
     }
-    size_t size(bool Remainder = false) const noexcept
+    [[nodiscard]] size_t size(bool Remainder = false) const noexcept
     {
         return Internalsize - (Remainder ? Internaliterator : 0);
     }
-    const uint8_t *data(bool atOffset = false) const noexcept
+    [[nodiscard]] const uint8_t *data(bool atOffset = false) const noexcept
     {
         // Trying to get a pointer past our allocation.
         if (atOffset && (Internaliterator >= Internalsize)) return nullptr;
@@ -176,7 +180,7 @@ struct Bytebuffer_t
         const auto Newbuffer = (uint8_t *)malloc(Size);
         std::memset(Newbuffer, 0, Size);
 
-        Internalbuffer = std::move(Newbuffer);
+        Internalbuffer = Newbuffer;
         Internaliterator = 0;
         Internalsize = Size;
     }
@@ -228,9 +232,17 @@ struct Bytebuffer_t
         // If it's an enumeration, get the base type.
         if constexpr (std::is_enum_v<Type>) return toID<std::underlying_type_t<Type>>();
 
-        // Spans are either arrays or blobs of data, do not use it for strings..
-        if constexpr (cmp::isDerived<Type, std::vector>)
+        // Vectors are either arrays or blobs of data.
+        if constexpr (cmp::isDerived<Type, std::vector> || requires { cmp::isDerived<Type, std::array>; } || requires { cmp::isDerived<Type, std::span>; })
         {
+            // Do not use spans for strings, they are a headache to deal with.
+            if constexpr (requires { cmp::isDerived<Type, std::span>; })
+            {
+                if constexpr (cmp::isDerived<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char>) assert(false);
+                if constexpr (cmp::isDerived<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char8_t>) assert(false);
+                if constexpr (cmp::isDerived<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, wchar_t>) assert(false);
+            }
+
             if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, uint8_t>) return BB_BLOB;
             return BB_ARRAY + toID<std::decay_t<typename Type::value_type>>();
         }
@@ -238,6 +250,7 @@ struct Bytebuffer_t
         // Strings of std::span is not supported because they are a pain.
         if constexpr (cmp::isDerived<Type, std::basic_string> || cmp::isDerived<Type, std::basic_string_view>)
         {
+            if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, uint8_t>) return BB_BLOB;
             if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, char>) return BB_ASCIISTRING;
             if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, char8_t>) return BB_UTF8STRING;
             if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, wchar_t>) return BB_UNICODESTRING;
@@ -305,7 +318,7 @@ struct Bytebuffer_t
             if (Count == 0) [[unlikely]] return false;
             if ((Count * sizeof(typename Type::value_type)) != Size) [[unlikely]] return false;
 
-            // STL implements vector<bool> as a bitset, so we need a special case.
+            // STL implements vector<bool> as a bitset, so we can't really memcpy.
             if constexpr (std::is_same_v<typename Type::value_type, bool>)
             {
                 Buffer.resize(Count);
@@ -318,7 +331,16 @@ struct Bytebuffer_t
             else
             {
                 Buffer.resize(Count);
-                return rawRead(Size, Buffer.data());
+                const auto Result = rawRead(Size, Buffer.data());
+
+                // Ensure endian-ness.
+                if constexpr (std::is_integral_v<Type> || std::is_floating_point_v<Type>)
+                {
+                    for (size_t i = 0; i < Count; ++i)
+                        Buffer[i] = cmp::fromLittle(Buffer[i]);
+                }
+
+                return Result;
             }
         }
 
@@ -342,12 +364,20 @@ struct Bytebuffer_t
         }
 
         // POD.
-        return rawRead(sizeof(Type), &Buffer);
+        const auto Result = rawRead(sizeof(Type), &Buffer);
+        if constexpr (std::is_integral_v<Type> || std::is_floating_point_v<Type>)
+        {
+            Buffer = cmp::fromLittle(Buffer);
+        }
+        return Result;
     }
-    template <typename Type> void Write(Type Value, bool Typechecked = true)
+    template <typename Type> void Write(Type &Value, bool Typechecked = true)
     {
+        // User-specified serialization.
+        if constexpr (requires { Value.Serialize(*this); }) return Value.Serialize(*this);
+
         // Special case of merging bytebuffers.
-        if constexpr (std::is_same_v<Type, Bytebuffer_t>)
+        else if constexpr (std::is_same_v<Type, Bytebuffer_t>)
         {
             // In-case we get a non-owning buffer, the caller needs to update the iterator.
             assert(Value.Internaliterator);
@@ -356,19 +386,28 @@ struct Bytebuffer_t
             return;
         }
 
-        constexpr auto TypeID = toID<Type>();
-        static_assert(TypeID != BB_NONE, "Invalid datatype.");
+        // If we encounter an optional, process it instead.
+        else if constexpr (cmp::isDerived<Type, std::optional>)
+        {
+            if (Value) return Write(*Value, Typechecked);
+            else return WriteNULL();
+        }
+        else
+        {
+            static_assert(toID<Type>() != BB_NONE, "Invalid datatype.");
+        }
 
         // A byte prefix identifier for the type.
+        constexpr auto TypeID = toID<Type>();
         if (Typechecked || TypeID > BB_ARRAY) [[likely]]
             rawWrite(sizeof(TypeID), &TypeID);
 
         // Array of values.
-        if constexpr (cmp::isDerived<Type, std::vector> || cmp::isDerived<Type, std::span>)
+        if constexpr (cmp::isDerived<Type, std::vector> || requires { cmp::isDerived<Type, std::array>; } || requires { cmp::isDerived<Type, std::span>; })
         {
             // Array layout, total size and element count.
-            Write<uint32_t>(sizeof(typename Type::value_type) * Value.size());
-            Write<uint32_t>(Value.size(), false);
+            Write<uint32_t>(uint32_t(sizeof(typename Type::value_type) * Value.size()));
+            Write<uint32_t>((uint32_t)Value.size(), false);
 
             // No need for a type ID with each element.
             for (const auto &Item : Value)
@@ -382,7 +421,7 @@ struct Bytebuffer_t
         {
             if constexpr (std::is_same_v<Type, Blob_t>)
             {
-                Write<uint32_t>(Value.size(), Typechecked);
+                Write<uint32_t>((uint32_t)Value.size(), Typechecked);
                 rawWrite(Value.size(), Value.data());
             }
             else
@@ -395,13 +434,25 @@ struct Bytebuffer_t
         }
 
         // POD.
-        rawWrite(sizeof(Type), &Value);
+        if constexpr (std::is_integral_v<Type> || std::is_floating_point_v<Type>)
+        {
+            Value = cmp::toLittle(Value);
+        }
+        else rawWrite(sizeof(Type), &Value);
     }
     template <typename Type> Type Read(bool Typechecked = true)
     {
         Type Result{};
+
+        // User-specified serialization.
+        if constexpr (requires { Result.Deserialize(*this); }) return Result.Deserialize(*this);
+
         Read(Result, Typechecked);
         return Result;
+    }
+    void WriteNULL()
+    {
+        return rawWrite(1);
     }
 
     // Helper for reading and writing.
@@ -413,6 +464,12 @@ struct Bytebuffer_t
     template <typename Type> void operator>>(Type &Buffer)
     {
         Read(Buffer);
+    }
+
+    // Easier access to the internal storage.
+    [[nodiscard]] std::span<const uint8_t> as_span() const
+    {
+        return { data(), size() };
     }
 
     // Helper for serializing the contents.
@@ -498,3 +555,310 @@ struct Bytebuffer_t
         return std::string(Output.str());
     }
 };
+
+// Might as well reuse some plumbing for basic protobuffer support.
+struct Protobuffer_t : Bytebuffer_t
+{
+    enum class Wiretype_t : uint8_t { VARINT, I64, STRING /* LEN */, I32 = 5, INVALID = 255 };
+    uint32_t CurrentID{}; Wiretype_t Currenttype{};
+
+    // Inherit constructors.
+    using Bytebuffer_t::Bytebuffer_t;
+
+    // Copying a buffer takes a read-only view of it, prefer moving.
+    explicit Protobuffer_t(const Protobuffer_t &Other) noexcept : Bytebuffer_t(Other)
+    {
+        Currenttype = Other.Currenttype;
+        CurrentID = Other.CurrentID;
+    }
+    Protobuffer_t(Protobuffer_t &&Other) noexcept : Bytebuffer_t(Other)
+    {
+        Currenttype = Other.Currenttype;
+        CurrentID = Other.CurrentID;
+    }
+
+    // Encode as little endian.
+    template <typename T> requires (sizeof(T) == 8) void EncodeI64(T Input)
+    {
+        Bytebuffer_t::Write<T>(cmp::toLittle(Input), false);
+    }
+    template <typename T> requires (sizeof(T) == 4) void EncodeI32(T Input)
+    {
+        Bytebuffer_t::Write<T>(cmp::toLittle(Input), false);
+    }
+    template <std::integral T> void EncodeVARINT(T Input)
+    {
+        std::array<uint8_t, 10> Buffer{};
+        uint8_t Size = 0;
+
+        // Little endian needed.
+        Input = cmp::toLittle(Input);
+
+        while (Input && Size < 10)
+        {
+            // MSB = continuation.
+            Buffer[Size] = (Input | 0x80) & 0xFF;
+            Input >>= 7;
+            ++Size;
+        }
+
+        // Clear MSB.
+        Buffer[Size] &= 0x7F;
+
+        // Need at least 1 byte.
+        if (Size == 0) Size = 1;
+        rawWrite(Size, Buffer.data());
+    }
+    void EncodeSTRING(const std::u8string Input)
+    {
+        EncodeVARINT(Input.size());
+        rawWrite(Input.size(), Input.data());
+    }
+
+    // Decode to host endian.
+    template <typename T> requires (sizeof(T) == 8) T DecodeI64()
+    {
+        const auto I64 = Bytebuffer_t::Read<T>(false);
+        return cmp::fromLittle(I64);
+    }
+    template <typename T> requires (sizeof(T) == 4) T DecodeI32()
+    {
+        const auto I32 = Bytebuffer_t::Read<T>(false);
+        return cmp::fromLittle(I32);
+    }
+    uint64_t DecodeVARINT()
+    {
+        uint64_t Value{};
+
+        for (int i = 0; i < 64; i += 7)
+        {
+            const auto Byte = Bytebuffer_t::Read<uint8_t>(false);
+            Value |= (Byte & 0x7F) << i;
+
+            // No continuation bit.
+            if (!(Value & 0x80))
+                break;
+        }
+
+        return Value;
+    }
+    std::u8string DecodeSTRING()
+    {
+        const auto Length = DecodeVARINT();
+        std::u8string Result(Length, 0);
+
+        rawRead(Length, Result.data());
+        return Result;
+    }
+
+    // Sometimes the protocol wants ZigZag encoding over 2's compliment.
+    template <std::integral T> T toZigZag(T Input)
+    {
+        return (Input >> 1) ^ -(Input & 1);
+    }
+    template <std::integral T> T fromZigZag(T Input)
+    {
+        constexpr size_t Bits = sizeof(T) * 8 - 1;
+        return (Input >> Bits) ^ (Input << 1);
+    }
+
+    // Tags are silly things.
+    void EncodeTAG(uint32_t ID, Wiretype_t Type)
+    {
+        const uint64_t Tag = (ID << 3) | uint8_t(Type);
+        EncodeVARINT(Tag);
+    }
+    std::pair<uint32_t, Wiretype_t> DecodeTAG()
+    {
+        const auto Tag = DecodeVARINT();
+
+        // EOF
+        if (Tag == 0) [[unlikely]]
+        {
+            Bytebuffer_t::Seek(0, SEEK_SET);
+            return { 0, Wiretype_t::INVALID };
+        }
+
+        return { uint32_t(Tag >> 3), Wiretype_t(Tag & 7) };
+    }
+
+    // Seek tags.
+    bool Seek(uint32_t ID)
+    {
+        // Early exit.
+        if (ID == CurrentID && ID != 0)
+            return true;
+
+        // Seek from begining.
+        if (ID < CurrentID)
+        {
+            CurrentID = 0;
+
+            Bytebuffer_t::Seek(0, SEEK_SET);
+            return Seek(ID);
+        }
+
+        // Seek forward.
+        while(true)
+        {
+            std::tie(CurrentID, Currenttype) = DecodeTAG();
+
+            if (Wiretype_t::INVALID == Currenttype) [[unlikely]] return false;
+            if (ID == CurrentID) [[unlikely]] return true;
+
+            // Skip the data.
+            switch (Currenttype)
+            {
+                case Wiretype_t::VARINT: { (void)DecodeVARINT(); break; }
+                case Wiretype_t::STRING: { (void)DecodeSTRING(); break; }
+                case Wiretype_t::I64:    { (void)DecodeI64<uint64_t>(); break; }
+                case Wiretype_t::I32:    { (void)DecodeI32<uint32_t>(); break; }
+            }
+        }
+    }
+
+    // Typed IO, need explicit type when writing, tries to convert when reading.
+    template <typename T> void Write(T Value, Wiretype_t Type, uint32_t ID)
+    {
+        // User-specified serialization.
+        if constexpr (requires { Value.Serialize(*this); }) return Value.Serialize(*this);
+
+        // Special case of merging bytebuffers.
+        if constexpr (std::is_same_v<T, Bytebuffer_t> || std::is_same_v<T, Protobuffer_t>)
+        {
+            // In-case we get a non-owning buffer, the caller needs to update the iterator.
+            assert(Value.Internaliterator);
+
+            rawWrite(std::min(Value.Internaliterator, Value.Internalsize), Value.data());
+            return;
+        }
+
+        EncodeTAG(ID, Type);
+        if (Type == Wiretype_t::VARINT) EncodeVARINT(Value);
+        if (Type == Wiretype_t::STRING) EncodeSTRING(Value);
+        if (Type == Wiretype_t::I64) EncodeI64(Value);
+        if (Type == Wiretype_t::I32) EncodeI32(Value);
+    }
+    template <typename Type> bool Read(Type &Buffer, uint32_t ID)
+    {
+        // Lookup ID.
+        if (!Seek(ID))
+        {
+            Errorprint(va("Protobuf tag %u not found", ID));
+            return false;
+        }
+
+        if (Currenttype == Wiretype_t::VARINT)
+        {
+                 if constexpr (std::is_integral_v<Type>) Buffer = (Type)DecodeVARINT();
+            else if constexpr (std::is_floating_point_v<Type>) Buffer = (Type)DecodeVARINT();
+            else
+            {
+                Debugprint(va("Error: Protobuf tag %u type is VARINT", ID));
+                return false;
+            }
+
+            return true;
+        }
+
+        if (Currenttype == Wiretype_t::I64)
+        {
+            if constexpr (sizeof(Type) == 8) Buffer = DecodeI64<Type>();
+            else
+            {
+                Debugprint(va("Error: Protobuf tag %u type is I64", ID));
+                return false;
+            }
+
+            return true;
+        }
+
+        if (Currenttype == Wiretype_t::I32)
+        {
+            if constexpr (sizeof(Type) == 4) Buffer = DecodeI32<Type>();
+            else
+            {
+                Debugprint(va("Error: Protobuf tag %u type is I32", ID));
+                return false;
+            }
+
+            return true;
+        }
+
+        if (Currenttype == Wiretype_t::STRING)
+        {
+            if constexpr (cmp::isDerived<Type, std::basic_string>)
+            {
+                const auto String = DecodeSTRING();
+                if constexpr (std::is_same_v<Type, std::u8string>) Buffer = String;
+                else if constexpr (std::is_same_v<Type, std::string>) Buffer = Encoding::toASCII(String);
+                else if constexpr (std::is_same_v<Type, std::wstring>) Buffer = Encoding::toUNICODE(String);
+                else if constexpr (std::is_same_v<Type, Blob_t>) Buffer = { String.begin(), String.end() };
+                else
+                {
+                    Debugprint(va("Error: Protobuf tag %u type is LEN, but could not convert it?", ID));
+                    return false;
+                }
+
+                return true;
+            }
+            else
+            {
+                Debugprint(va("Error: Protobuf tag %u type is LEN", ID));
+                return false;
+            }
+        }
+
+        // WTF?
+        assert(false);
+        return false;
+    }
+    template <typename Type> Type Read(uint32_t ID)
+    {
+        Type Result{};
+
+        // User-specified serialization.
+        if constexpr (requires { Result.Deserialize(*this); }) return Result.Deserialize(*this);
+
+        Read(Result, ID);
+        return Result;
+    }
+};
+
+// Helper to serialize structs until we get reflection..
+namespace Bytebuffer
+{
+    static decltype(auto) Members(const auto &Object, const auto &Visitor)
+    {
+        using Type = std::remove_cvref_t<decltype(Object)>;
+
+             if constexpr (requires { [](Type &This) { auto &[a1] = This; }; }) { auto &[a1] = Object; return Visitor(a1); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2] = This; }; }) { auto &[a1, a2] = Object; return Visitor(a1, a2); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2, a3] = This; }; }) { auto &[a1, a2, a3] = Object; return Visitor(a1, a2, a3); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2, a3, a4] = This; }; }) { auto &[a1, a2, a3, a4] = Object; return Visitor(a1, a2, a3, a4); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2, a3, a4, a5] = This; }; }) { auto &[a1, a2, a3, a4, a5] = Object; return Visitor(a1, a2, a3, a4, a5); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2, a3, a4, a5, a6] = This; }; }) { auto &[a1, a2, a3, a4, a5, a6] = Object; return Visitor(a1, a2, a3, a4, a5, a6); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2, a3, a4, a5, a6, a7] = This; }; }) { auto &[a1, a2, a3, a4, a5, a6, a7] = Object; return Visitor(a1, a2, a3, a4, a5, a6, a7); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2, a3, a4, a5, a6, a7, a8] = This; }; }) { auto &[a1, a2, a3, a4, a5, a6, a7, a8] = Object; return Visitor(a1, a2, a3, a4, a5, a6, a7, a8); }
+        else if constexpr (requires { [](Type &This) { auto &[a1, a2, a3, a4, a5, a6, a7, a8, a9] = This; }; }) { auto &[a1, a2, a3, a4, a5, a6, a7, a8, a9] = Object; return Visitor(a1, a2, a3, a4, a5, a6, a7, a8, a9); }
+
+        else
+        {
+            static_assert(std::is_void_v<decltype(Object)>, "Need a bigger boat..");
+        }
+    }
+
+    static Bytebuffer_t fromStruct(const auto &Object)
+    {
+        Bytebuffer_t Buffer{};
+
+        Members(Object, [&](auto && ...Items) -> void
+        {
+            ((Buffer << Items), ...);
+        });
+
+        return Buffer;
+    }
+}
+
+#pragma warning (pop)
