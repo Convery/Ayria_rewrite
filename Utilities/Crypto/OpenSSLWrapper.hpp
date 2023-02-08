@@ -7,7 +7,7 @@
 */
 
 #pragma once
-#include "../Constexprhelpers.hpp"
+#include <Utilities/Utilities.hpp>
 
 #if defined (HAS_OPENSSL)
 #include <openssl/hmac.h>
@@ -63,6 +63,38 @@ namespace Hash
 
         HMAC(EVP_sha512(), Key, (int)Keysize, (uint8_t *)Input, (int)Size, Buffer, &Buffersize);
         return std::bit_cast<std::array<uint8_t, 64>>(Buffer);
+    }
+
+    // Any range.
+    template <cmp::Range_t T> constexpr cmp::Array_t<uint8_t, 16> MD5(const T &Input)
+    {
+        const auto Span = cmp::getBytes(Input);
+        return MD5(Span.data(), Span.size());
+    }
+    template <cmp::Range_t T> constexpr cmp::Array_t<uint8_t, 20> SHA1(const T &Input)
+    {
+        const auto Span = cmp::getBytes(Input);
+        return SHA1(Span.data(), Span.size());
+    }
+
+    // Any other typed value.
+    template <typename T> requires (!cmp::Range_t<T>) constexpr cmp::Array_t<uint8_t, 16> MD5(const T &Input)
+    {
+        return MD5(cmp::getBytes(Input));
+    }
+    template <typename T> requires (!cmp::Range_t<T>) constexpr cmp::Array_t<uint8_t, 20> SHA1(const T &Input)
+    {
+        return SHA1(cmp::getBytes(Input));
+    }
+
+    // String literals.
+    template <cmp::Char_t T, size_t N> constexpr cmp::Array_t<uint8_t, 16> MD5(const T(&Input)[N])
+    {
+        return MD5(cmp::getBytes(cmp::toArray(Input)));
+    }
+    template <cmp::Char_t T, size_t N> constexpr cmp::Array_t<uint8_t, 20> SHA1(const T(&Input)[N])
+    {
+        return SHA1(cmp::getBytes(cmp::toArray(Input)));
     }
 }
 

@@ -7,7 +7,7 @@
 */
 
 #pragma once
-#include <Stdinclude.hpp>
+#include <Utilities/Utilities.hpp>
 
 #if defined (HAS_OPENSSL)
 #include <openssl/evp.h>
@@ -260,7 +260,7 @@ namespace Hash
     {
         return SHA256(cmp::getBytes(Input));
     }
-    template <typename T> requires (!cmp::Range_t<T>) constexpr cmp::Array_t<uint8_t, 32> SHA512(const T &Input)
+    template <typename T> requires (!cmp::Range_t<T>) constexpr cmp::Array_t<uint8_t, 64> SHA512(const T &Input)
     {
         return SHA512(cmp::getBytes(Input));
     }

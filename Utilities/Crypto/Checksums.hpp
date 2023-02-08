@@ -7,7 +7,7 @@
 */
 
 #pragma once
-#include "../Constexprhelpers.hpp"
+#include <Utilities/Utilities.hpp>
 
 namespace Hash
 {
@@ -76,18 +76,18 @@ namespace Hash
         constexpr uint64_t _waterp0 = 0xA0761D65ULL, _waterp1 = 0xE7037ED1ULL, _waterp2 = 0x8EBC6AF1ULL;
         constexpr uint64_t _waterp3 = 0x589965CDULL, _waterp4 = 0x1D8E4E27ULL, _waterp5 = 0xEB44ACCBULL;
 
-        template <size_t N, cmp::Byte_t T> constexpr uint64_t toINT64(const T *p)
+        template <size_t Bits, cmp::Byte_t T> constexpr uint64_t toINT64(const T *p)
         {
             uint64_t Result{};
 
-            if constexpr (N >= 64) Result |= (uint64_t(*p++) << (N - 64));
-            if constexpr (N >= 56) Result |= (uint64_t(*p++) << (N - 56));
-            if constexpr (N >= 48) Result |= (uint64_t(*p++) << (N - 48));
-            if constexpr (N >= 40) Result |= (uint64_t(*p++) << (N - 40));
-            if constexpr (N >= 32) Result |= (uint64_t(*p++) << (N - 32));
-            if constexpr (N >= 24) Result |= (uint64_t(*p++) << (N - 24));
-            if constexpr (N >= 16) Result |= (uint64_t(*p++) << (N - 16));
-            if constexpr (N >= 8)  Result |= (uint64_t(*p  ) << (N - 8));
+            if constexpr (Bits >= 64) Result |= (uint64_t(*p++) << (Bits - 64));
+            if constexpr (Bits >= 56) Result |= (uint64_t(*p++) << (Bits - 56));
+            if constexpr (Bits >= 48) Result |= (uint64_t(*p++) << (Bits - 48));
+            if constexpr (Bits >= 40) Result |= (uint64_t(*p++) << (Bits - 40));
+            if constexpr (Bits >= 32) Result |= (uint64_t(*p++) << (Bits - 32));
+            if constexpr (Bits >= 24) Result |= (uint64_t(*p++) << (Bits - 24));
+            if constexpr (Bits >= 16) Result |= (uint64_t(*p++) << (Bits - 16));
+            if constexpr (Bits >= 8)  Result |= (uint64_t(*p  ) << (Bits - 8));
             return Result;
         }
         constexpr uint64_t WWProcess(uint64_t A, uint64_t B)
@@ -115,6 +115,7 @@ namespace Hash
             const auto Offset = Input.data() + Count * 16;
             switch (Remainder)
             {
+                case 0:  break;
                 case 1:  Hash = WWProcess(_waterp2 ^ Hash, toINT64<8>(Offset) ^ _waterp1); break;
                 case 2:  Hash = WWProcess(_waterp3 ^ Hash, toINT64<16>(Offset) ^ _waterp4); break;
                 case 3:  Hash = WWProcess(toINT64<16>(Offset) ^ Hash, toINT64<8>(Offset + 2) ^ _waterp2); break;
@@ -154,6 +155,7 @@ namespace Hash
             const auto Offset = Input.data() + Count * 16;
             switch (Remainder)
             {
+                case 0:  break;
                 case 1:  Hash = WWProcess(_wheatp2 ^ Hash, toINT64<8>(Offset) ^ _wheatp1); break;
                 case 2:  Hash = WWProcess(_wheatp3 ^ Hash, toINT64<16>(Offset) ^ _wheatp4); break;
                 case 3:  Hash = WWProcess(toINT64<16>(Offset) ^ Hash, toINT64<8>(Offset + 2) ^ _wheatp2); break;
@@ -206,18 +208,19 @@ namespace Hash
             return ~CRC;
         }
 
-        // BZIP2 CRC32
-        constexpr uint32_t CRC32A(std::span<const uint8_t> Input)
-        {
-            return CRC32<0x04C11DB7, false>(Input, 0xFFFFFFFF);
-        }
-        
+
         // IEEE CRC32
-        constexpr uint32_t CRC32B(std::span<const uint8_t> Input)
+        constexpr uint32_t CRC32A(std::span<const uint8_t> Input)
         {
             return CRC32<0xEDB88320, true>(Input, 0xFFFFFFFF);
         }
-        
+
+        // BZIP2 CRC32
+        constexpr uint32_t CRC32B(std::span<const uint8_t> Input)
+        {
+            return CRC32<0x04C11DB7, false>(Input, 0xFFFFFFFF);
+        }
+
         // Tencent CRC32
         constexpr uint32_t CRC32T(std::span<const uint8_t> Input)
         {
@@ -234,6 +237,10 @@ namespace Hash
         template <typename F, typename T> requires (!cmp::Range_t<T>) constexpr auto doHash(F &&Func, const T &Input)
         {
             return Func(cmp::getBytes(Input));
+        }
+        template <typename F, typename T> requires (!cmp::Range_t<T>) constexpr auto doHash(F &&Func, const T *Data, size_t Size)
+        {
+            return Func(cmp::getBytes(std::span(Data, Size)));
         }
         template <typename F, cmp::Char_t T, size_t N> requires (!cmp::Range_t<T>) constexpr auto doHash(F &&Func, const T(&Input)[N])
         {
@@ -252,22 +259,23 @@ namespace Hash
 
 // Drop-in generic functions for std:: algorithms, containers, and such.
 // e.g. std::unordered_set<SillyType, decltype(X::Hash), decltype(X::Equal)>
-namespace FNV
+namespace FNV32
 {
-    constexpr auto Hash = [](const auto &v)
-    {
-        if constexpr(sizeof(size_t) == sizeof(uint32_t)) return Hash::FNV1a_32(v);
-        else return Hash::FNV1a_64(v);
-    };
+    constexpr auto Hash = [](const auto &v) {return Hash::FNV1a_32(v); };
     constexpr auto Equal = [](const auto &l, const auto &r) { return Hash(l) == Hash(r); };
 }
-namespace WW
+namespace FNV64
 {
-    constexpr auto Hash = [](const auto &v)
-    {
-        if constexpr (sizeof(size_t) == sizeof(uint32_t)) return Hash::WW32(v);
-        else return Hash::WW64(v);
-    };
+    constexpr auto Hash = [](const auto &v) {return Hash::FNV1a_64(v); };
     constexpr auto Equal = [](const auto &l, const auto &r) { return Hash(l) == Hash(r); };
 }
-
+namespace WW32
+{
+    constexpr auto Hash = [](const auto &v) {return Hash::WW32(v); };
+    constexpr auto Equal = [](const auto &l, const auto &r) { return Hash(l) == Hash(r); };
+}
+namespace WW64
+{
+    constexpr auto Hash = [](const auto &v) {return Hash::WW64(v); };
+    constexpr auto Equal = [](const auto &l, const auto &r) { return Hash(l) == Hash(r); };
+}
