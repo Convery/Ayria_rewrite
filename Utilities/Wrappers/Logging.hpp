@@ -5,7 +5,7 @@
 */
 
 #pragma once
-#include "../Utilities.hpp"
+#include <Utilities/Utilities.hpp>
 
 namespace Logging
 {

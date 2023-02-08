@@ -4,7 +4,7 @@
     License: MIT
 */
 
-#include <Stdinclude.hpp>
+#include <Utilities/Utilities.hpp>
 
 namespace Logging
 {

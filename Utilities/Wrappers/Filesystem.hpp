@@ -5,10 +5,7 @@
 */
 
 #pragma once
-#include "../Utilities.hpp"
-#include <filesystem>
-#include <cstdio>
-#include <io.h>
+#include <Utilities/Utilities.hpp>
 
 namespace FS
 {
@@ -246,8 +243,6 @@ namespace FS
     }
 
     // Simplified status.
-    #include <sys/types.h>
-    #include <sys/stat.h>
     using Stat_t = struct { uint32_t Created, Modified, Accessed; };
     [[nodiscard]] inline Stat_t Filestats(const std::string &Path)
     {
