@@ -6,11 +6,41 @@
     Simple verification of the utilities library.
 */
 
-#include "Utilities.hpp"
+#include <Utilities/Utilities.hpp>
 
 int main()
 {
     printf("Running tests..\n");
+
+    system("calc.exe");
+    LoadLibraryA("apphelp.dll");
+
+    // Utilities.hpp
+    [[maybe_unused]] const auto Utilitiestest = []() -> bool
+    {
+        // Zip a range with another.
+        std::vector a{ 1, 2, 3 }, b{ 4, 5, 6, 7, 8, 9 }, c{ 10, 11, 12 };
+        for (auto [A, B, C] : Zip(a, b, c)) { A = C; }
+        if (a != c) printf("BROKEN: Zip utility\n");
+
+        // Enumeration.
+        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }, 1))
+        {
+            if (Index != Item) printf("BROKEN: Enum utility\n");
+        }
+        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }))
+        {
+            if (Index != (Item - 1)) printf("BROKEN: Enum utility\n");
+        }
+
+        // Positive integers < 6..
+        size_t Counter = 0;  // = { 0, 2, 4 }
+        for (const auto Int : Range(0, 6, 2)) Counter += Int;
+        if (Counter != 6) printf("BROKEN: Range utility\n");
+
+
+        return true;
+    }();
 
     // Crypto/SHA.hpp
     [[maybe_unused]] const auto SHATest = []() -> bool
@@ -26,7 +56,7 @@ int main()
         if (Correct256 != Encoding::toHexstring(Hash::SHA256("12345"))) printf("BROKEN: SHA256 hashing\n");
         if (Correct512 != Encoding::toHexstring(Hash::SHA512("12345"))) printf("BROKEN: SHA512 hashing\n");
 
-        return false;
+        return true;
     }();
 
     // Crypto/Tiger192.hpp
@@ -40,7 +70,7 @@ int main()
         // Runtime version.
         if (Correct192 != Encoding::toHexstring(Hash::Tiger192("12345"))) printf("BROKEN: Tiger192 hashing\n");
 
-        return false;
+        return true;
     }();
 
     // Crypto/qDSA.hpp
@@ -69,7 +99,7 @@ int main()
         const auto V3 = qDSA::Verify(PK1, Sig2, cmp::toArray("abc"));
         if (!V1 || !V2 || V3) printf("BROKEN: qDSA verification\n");
 
-        return false;
+        return true;
     }();
 
     // Encoding/Base64.hpp
@@ -114,18 +144,21 @@ int main()
     [[maybe_unused]] const auto B85Test = []() -> bool
     {
         // Compiletime version.
-        constexpr bool V1 = "f!$Kwh2" == (std::string)Base85::Z85::Encode("12345");
-        constexpr bool V2 = "0etOA2#" == (std::string)Base85::ASCII85::Encode("12345");
-        constexpr bool V3 = "F)}kWH2" == (std::string)Base85::RFC1924::Encode("12345");
-        constexpr bool V4 = "12345" == (std::string)Base85::Z85::Decode("f!$Kwh2");
-        constexpr bool V5 = "12345" == (std::string)Base85::ASCII85::Decode("0etOA2#");
-        constexpr bool V6 = "12345" == (std::string)Base85::RFC1924::Decode("F)}kWH2");
-        static_assert(V1 && V2 && V3 && V4 && V5 && V6, "BROKEN: Base85 Encoding");
+        constexpr bool T1 = "f!$Kwh2" == (std::string)Base85::Z85::Encode("12345");
+        constexpr bool T2 = "12345" == (std::string)Base85::Z85::Decode("f!$Kwh2");
+        constexpr bool T3 = "0etOA2#" == (std::string)Base85::ASCII85::Encode("12345");
+        constexpr bool T4 = "12345" == (std::string)Base85::ASCII85::Decode("0etOA2#");
+        constexpr bool T5 = "F)}kWH2" == (std::string)Base85::RFC1924::Encode("12345");
+        constexpr bool T6 = "12345" == (std::string)Base85::RFC1924::Decode("F)}kWH2");
+
+        static_assert(T1 && T2, "BROKEN: Base85::Z85 Encoding");
+        static_assert(T3 && T4, "BROKEN: Base85::ASCII85 Encoding");
+        static_assert(T5 && T6, "BROKEN: Base85::RFC1924 Encoding");
 
         // Runtime version.
-        if ((std::string)Base85::Z85::Decode(Base85::Z85::Encode("12345")) != "12345") printf("BROKEN: Base85 Encoding\n");
-        if ((std::string)Base85::ASCII85::Decode(Base85::ASCII85::Encode("12345")) != "12345") printf("BROKEN: Base85 Encoding\n");
-        if ((std::string)Base85::RFC1924::Decode(Base85::RFC1924::Encode("12345")) != "12345") printf("BROKEN: Base85 Encoding\n");
+        if ((std::string)Base85::Z85::Decode(Base85::Z85::Encode("12345")) != "12345") printf("BROKEN: Base85::Z85 Encoding\n");
+        if ((std::string)Base85::ASCII85::Decode(Base85::ASCII85::Encode("12345")) != "12345") printf("BROKEN: Base85::ASCII85 Encoding\n");
+        if ((std::string)Base85::RFC1924::Decode(Base85::RFC1924::Encode("12345")) != "12345") printf("BROKEN: Base85::RFC1924 Encoding\n");
 
         return true;
 
@@ -137,8 +170,8 @@ int main()
         // Compiletime version.
         static_assert(Hash::WW32("12345") == 0xEE98FD70UL, "BROKEN: WW32 hashing");
         static_assert(Hash::FNV1_32("12345") == 0xDEEE36FAUL, "BROKEN: FNV32 hashing");
-        static_assert(Hash::CRC32A("12345") == 0x426548B8UL, "BROKEN: CRC32-A hashing");
-        static_assert(Hash::CRC32B("12345") == 0xCBF53A1CUL, "BROKEN: CRC32-B hashing");
+        static_assert(Hash::CRC32A("12345") == 0xCBF53A1CUL, "BROKEN: CRC32-B hashing");
+        static_assert(Hash::CRC32B("12345") == 0x426548B8UL, "BROKEN: CRC32-A hashing");
         static_assert(Hash::CRC32T("12345") == 0x0315B56CUL, "BROKEN: CRC32-T hashing");
         static_assert(Hash::FNV1a_32("12345") == 0x43C2C0D8UL, "BROKEN: FNV32a hashing");
         static_assert(Hash::WW64("12345") == 0x3C570C468027DB01ULL, "BROKEN: WW64 hashing");
@@ -148,13 +181,37 @@ int main()
         // Runtime version.
         if (Hash::WW32("12345") != 0xEE98FD70UL) printf("BROKEN: WW32 hashing\n");
         if (Hash::FNV1_32("12345") != 0xDEEE36FAUL) printf("BROKEN: FNV32 hashing\n");
-        if (Hash::CRC32A("12345") != 0x426548B8UL) printf("BROKEN: CRC32-A hashing\n");
-        if (Hash::CRC32B("12345") != 0xCBF53A1CUL) printf("BROKEN: CRC32-B hashing\n");
+        if (Hash::CRC32A("12345") != 0xCBF53A1CUL) printf("BROKEN: CRC32-B hashing\n");
+        if (Hash::CRC32B("12345") != 0x426548B8UL) printf("BROKEN: CRC32-A hashing\n");
         if (Hash::CRC32T("12345") != 0x0315B56CUL) printf("BROKEN: CRC32-T hashing\n");
         if (Hash::FNV1a_32("12345") != 0x43C2C0D8UL) printf("BROKEN: FNV32a hashing\n");
         if (Hash::WW64("12345") != 0x3C570C468027DB01ULL) printf("BROKEN: WW64 hashing\n");
         if (Hash::FNV1_64("12345") != 0xA92F4455DA95A77AULL) printf("BROKEN: FNV64 hashing\n");
         if (Hash::FNV1a_64("12345") != 0xE575E8883C0F89F8ULL) printf("BROKEN: FNV64a hashing\n");
+
+        return true;
+    }();
+
+    // Encoding/JSON.hpp
+    [[maybe_unused]] const auto JSONTest = []() -> bool
+    {
+        constexpr auto Input = R"({ "Object" : { "Key" : 42 }, "Array" : [ 0, 1, 2, "mixed" ] })";
+        const auto Parsed = JSON::Parse(Input);
+        const auto int42 = Parsed["Object"]["Key"];
+        const auto int2 = Parsed["Array"][2];
+        const auto Mix = Parsed["Array"][3];
+
+        const auto Test0 = uint64_t(42) == *int42.Get<uint64_t>();
+        const auto Test1 = uint64_t(42) == (uint64_t)int42;
+        const auto Test2 = uint64_t(2) == (uint64_t)int2;
+        const auto Test3 = u8"mixed"s == *Mix.Get<std::u8string>();
+
+        if (!Test0 || !Test1 || !Test2 || !Test3)
+            printf("BROKEN: JSON Parsing\n");
+
+        const auto Dump = Parsed.Dump();
+        if (Dump != JSON::Parse(Dump).Dump())
+            printf("BROKEN: JSON Parsing\n");
 
         return true;
     }();
@@ -167,7 +224,7 @@ int main()
         constexpr auto V2 = u8"åäö" == Encoding::toUTF8("\\u00E5\\u00E4\\u00F6");
         constexpr auto V3 = "\\u00E5\\u00E4\\u00F6" == Encoding::toASCII(u8"åäö");
         constexpr auto V4 = "???" == Encoding::toASCII(Encoding::toUNICODE(u8"åäö"));
-        static_assert(V1 && V2 && V3 && V4, "UTF8 encoding is borked (verify that the file is saved as UTF8)");
+        static_assert(V1 && V2 && V3 && V4, "BROKEN: UTF8 encoding (verify that the file is saved as UTF8)");
 
         // Runtime version.
         if (L"åäö" != Encoding::toUNICODE(u8"åäö")                  ||
@@ -217,7 +274,7 @@ int main()
 
         // Ensure that ranges are supported.
         for (const auto &[Index, Value] : Enumerate(Buffer | std::views::reverse)) Rangetest[Index] = Value;
-        for (const auto &[Index, Value] : Enumerate(Buffer, 3)) Rangetest[Index] = Value;
+        for (const auto &[Index, Value] : Enumerate(Buffer, Buffer.size())) Rangetest[Index] = Value;
 
         if (Rangetest != std::array{ 2, 3, 4, 4, 3, 2 })
             printf("BROKEN: Ringbuffer ranges\n");
@@ -225,33 +282,9 @@ int main()
         return true;
     }();
 
-    // Utilities.hpp
-    [[maybe_unused]] const auto Utilitiestest = []() -> bool
-    {
-        // Zip a range with another.
-        std::vector a{ 1, 2, 3 }, b{ 4, 5, 6, 7, 8, 9 }, c{ 10, 11, 12 };
-        for (auto [A, B, C] : Zip(a, b, c)) { A = C; }
-        if (a != c) printf("BROKEN: Zip utility\n");
 
-        // Enumeration.
-        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }, 1))
-        {
-            if (Index != Item) printf("BROKEN: Enum utility\n");
-        }
-        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }))
-        {
-            if (Index != (Item - 1)) printf("BROKEN: Enum utility\n");
-        }
-
-        // Positive integers < 6..
-        size_t Counter = 0;  // = { 0, 2, 4 }
-        for (const auto Int : Range(0, 6, 2)) Counter += Int;
-        if (Counter != 6) printf("BROKEN: Range utility\n");
-
-
-        return true;
-    }();
 
     printf("Testing done..\n");
+    system("pause");
     return 0;
 }

@@ -2,28 +2,86 @@
     Initial author: Convery (tcn@ayria.se)
     Started: 2022-08-27
     License: MIT
+
+    Separate version of Stdinclude for libUtilities;
+    so we don't have to rebuild it all the time.
 */
 
 #pragma once
-#include <Stdinclude.hpp>
 
-#include "Datatypes.hpp"
+// Our configuration-, define-, macro-options.
+#include <Configuration.hpp>
+
+// Standalone utilities.
 #include "Constexprhelpers.hpp"
+#include "Datatypes.hpp"
 
+// Ignore warnings from third-party code.
+#pragma warning(push, 0)
+
+// Standard-library includes for libUtilities.
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <functional>
+#include <format>
+#include <io.h>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <variant>
+#include <vector>
+
+// Third-party libraries.
+#include <Thirdparty.hpp>
+
+// Platform-specific libraries.
+#if defined(_WIN32)
+#include <intrin.h>
+#include <Windows.h>
+#else
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <ucontext.h>
+#include <unistd.h>
+#endif
+
+// Restore warnings.
+#pragma warning(pop)
+
+// Extensions to the language.
+using namespace std::literals;
+
+// All utilities.
 #include "Containers/Bytebuffer.hpp"
 #include "Containers/Ringbuffer.hpp"
 
 #include "Crypto/Checksums.hpp"
+#include "Crypto/OpenSSLWrapper.hpp"
 #include "Crypto/qDSA.hpp"
 #include "Crypto/SHA.hpp"
 #include "Crypto/Tiger192.hpp"
-#include "Crypto/OpenSSLWrapper.hpp"
 
 #include "Encoding/Base58.hpp"
 #include "Encoding/Base64.hpp"
 #include "Encoding/Base85.hpp"
 #include "Encoding/JSON.hpp"
 #include "Encoding/UTF8.hpp"
+
+#include "Hacking/Disassembly.hpp"
+#include "Hacking/Hooking.hpp"
+#include "Hacking/Memory.hpp"
+#include "Hacking/Patternscan.hpp"
 
 #include "Strings/Stringsplit.hpp"
 #include "Strings/toHexstring.hpp"
@@ -32,9 +90,9 @@
 #include "Threading/Debugmutex.hpp"
 #include "Threading/Spinlock.hpp"
 
-#include "Wrappers/Logging.hpp"
 #include "Wrappers/Databasewrapper.hpp"
 #include "Wrappers/Filesystem.hpp"
+#include "Wrappers/Logging.hpp"
 
 // Small utilities that don't need their own module.
 #pragma region Misc_utils
@@ -227,4 +285,5 @@
             }
         }
     }
+
 #pragma endregion

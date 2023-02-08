@@ -6,9 +6,6 @@ string(REPLACE " " "_" Directory ${Directory})
 set(MODULENAME ${Directory})
 set(CMAKE_DEBUG_POSTFIX "")
 
-# Include the top of the dir.
-include_directories("${CMAKE_CURRENT_LIST_DIR}")
-
 # Just pull all the files from the directory.
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS *.cpp *.c *.asm)
 

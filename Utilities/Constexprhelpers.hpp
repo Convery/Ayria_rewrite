@@ -34,7 +34,8 @@ constexpr std::array<T, N + M> operator+(const std::array<T, N> &Left, const std
 namespace cmp
 {
     template <typename T> concept Byte_t = sizeof(T) == 1;
-    template <typename T> concept Range_t = requires (T t) { t.begin(); t.end(); };
+    template <typename T> concept Range_t = requires (T t) { t.begin(); t.end(); typename T::value_type; };
+    template <typename T> concept Sequential_t = requires (T t) { t.data(); t.size(); typename T::value_type; };
     template <typename T> concept Char_t = std::is_same_v<std::remove_const_t<T>, char> || std::is_same_v<std::remove_const_t<T>, char8_t>;
     template <typename T> concept WChar_t =  std::is_same_v<std::remove_const_t<T>, wchar_t>  || std::is_same_v<std::remove_const_t<T>, char16_t>;
 
@@ -52,24 +53,6 @@ namespace cmp
         Case_t<(std::bit_width(Maxvalue) > 16), uint32_t>,
         Case_t<(std::bit_width(Maxvalue) >  8), uint16_t>,
         Case_t<(std::bit_width(Maxvalue) <= 8), uint8_t> >::type;
-
-    // Sometimes the compiler complains about the lifetime of spans when it shouldn't.
-    template <typename T, size_t N> constexpr size_t getSize(const T(&Input)[N])
-    {
-        size_t Count = 0;
-        for (auto Item : Input) Count += (Item != T{});
-        return Count;
-    }
-    template <Range_t T> requires(std::is_constant_evaluated()) constexpr size_t getSize(const T &Range)
-    {
-        size_t Count = 0;
-        for (auto _ : Range) { Count++; (void)_; };
-        return Count;
-    }
-    template <Range_t T> requires(!std::is_constant_evaluated()) constexpr size_t getSize(const T &Range)
-    {
-        return std::ranges::size(Range);
-    }
 
     // Sometimes we just need a bit more room..
     template <typename T, size_t Old, size_t New>
@@ -294,22 +277,22 @@ namespace cmp
         constexpr Container_t() : Basetype::array() {}
         constexpr Container_t(Container_t &&) = default;
         constexpr Container_t(const Container_t &) = default;
-        constexpr Container_t(const std::array<uint8_t, N * sizeof(T)> &Array)
+        constexpr Container_t(const std::array<uint8_t, N * sizeof(T)> &Array) : Container_t()
         {
             cmp::memcpy(data(), Array.data(), N * sizeof(T));
         }
 
-        constexpr Container_t(Blob_t &&Blob)
+        constexpr Container_t(Blob_t &&Blob) : Container_t()
         {
-            cmp::memcpy(data(), Blob.data(), std::min(size(), getSize(Blob)));
+            cmp::memcpy(data(), Blob.data(), std::min(size(), std::size(Blob)));
         }
-        constexpr Container_t(const Blob_t &Blob)
+        constexpr Container_t(const Blob_t &Blob) : Container_t()
         {
-            cmp::memcpy(data(), Blob.data(), std::min(size(), getSize(Blob)));
+            cmp::memcpy(data(), Blob.data(), std::min(size(), std::size(Blob)));
         }
         template <cmp::Range_t U> constexpr Container_t(const U &Range) : Container_t()
         {
-            cmp::memcpy(data(), Range.data(), std::min(size(), getSize(Range)));
+            cmp::memcpy(data(), Range.data(), std::min(size(), std::size(Range)));
         }
         template <cmp::Byte_t U> constexpr Container_t(const U *Buffer, size_t Length) : Container_t()
         {
@@ -358,11 +341,9 @@ namespace cmp
         {
             return { begin(), end() };
         }
-        template <typename U> constexpr operator std::basic_string<U>() const
+        template <cmp::Byte_t U> constexpr operator std::basic_string<U>() const
         {
-            auto This = std::basic_string<U>{ (U *)data(), size() / sizeof(U)};
-            while (This.back() == U{}) This.pop_back();
-            return This;
+            return { begin(), end() };
         }
         constexpr const_reference operator[](size_t Index) const
         {
@@ -388,25 +369,26 @@ namespace cmp
         constexpr Container_t(Container_t &&) = default;
         constexpr Container_t(const Container_t &) = default;
 
-        constexpr Container_t(size_t Size)
+        constexpr Container_t(size_t Size) : Container_t()
         {
             Basetype::resize(Size);
         }
-        constexpr Container_t(Blob_t &&Blob)
+        constexpr Container_t(Blob_t &&Blob) : Container_t()
         {
             Basetype::resize(Blob.size());
-            cmp::memcpy(data(), Blob.data(), std::min(size(), getSize(Blob)));
+            cmp::memcpy(data(), Blob.data(), std::min(size(), std::size(Blob)));
         }
-        constexpr Container_t(const Blob_t &Blob)
+        constexpr Container_t(const Blob_t &Blob) : Container_t()
         {
-            cmp::memcpy(data(), Blob.data(), std::min(size(), getSize(Blob)));
+            Basetype::resize(Blob.size());
+            cmp::memcpy(data(), Blob.data(), std::min(size(), std::size(Blob)));
         }
         template <cmp::Range_t U> constexpr Container_t(const U &Range) : Container_t()
         {
-            const auto Wantedsize = sizeof(typename U::value_type) * getSize(Range);
+            const auto Wantedsize = sizeof(typename U::value_type) * std::size(Range);
 
             Basetype::resize(Wantedsize);
-            cmp::memcpy(data(), Range.data(), getSize(Range));
+            cmp::memcpy(data(), Range.data(), std::size(Range));
         }
         template <cmp::Byte_t U> constexpr Container_t(const U *Buffer, size_t Length) : Container_t()
         {
@@ -473,6 +455,46 @@ namespace cmp
     {
         if constexpr (std::endian::native == std::endian::little)
             return std::byteswap(Value);
+        else
+            return Value;
+    }
+
+    template <std::floating_point T> constexpr auto toInt(T Value)
+    {
+        if constexpr (sizeof(T) == 8) return std::bit_cast<uint64_t>(Value);
+        if constexpr (sizeof(T) == 4) return std::bit_cast<uint32_t>(Value);
+
+        // For when std::(b)float16_t is added.
+        if constexpr (sizeof(T) == 2) return std::bit_cast<uint16_t>(Value);
+
+        // All paths need to return something.
+        return std::bit_cast<uint8_t>(Value);
+    }
+    template <std::floating_point T> constexpr T toLittle(T Value)
+    {
+        if constexpr (std::endian::native == std::endian::big)
+            return std::bit_cast<T>(std::byteswap(toInt(Value)));
+        else
+            return Value;
+    }
+    template <std::floating_point T> constexpr T toBig(T Value)
+    {
+        if constexpr (std::endian::native == std::endian::little)
+            return std::bit_cast<T>(std::byteswap(toInt(Value)));
+        else
+            return Value;
+    }
+    template <std::floating_point T> constexpr T fromLittle(T Value)
+    {
+        if constexpr (std::endian::native == std::endian::big)
+            return std::bit_cast<T>(std::byteswap(toInt(Value)));
+        else
+            return Value;
+    }
+    template <std::floating_point T> constexpr T fromBig(T Value)
+    {
+        if constexpr (std::endian::native == std::endian::little)
+            return std::bit_cast<T>(std::byteswap(toInt(Value)));
         else
             return Value;
     }
