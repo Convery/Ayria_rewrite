@@ -5,8 +5,7 @@
 */
 
 #pragma once
-#include "../Utilities.hpp"
-#include <iostream>
+#include <Utilities/Utilities.hpp>
 
 // Helpers to deal with std::basic_string.
 template <typename T> concept String_t = requires (const T &Arg) { Arg.c_str(); };
@@ -14,21 +13,6 @@ template <String_t T> constexpr decltype(auto) Forward(const T &Arg) { return Ar
 template <typename T> constexpr decltype(auto) Forward(T &&Arg) { static_assert(!cmp::isDerived<T, std::basic_string_view>); return Arg; }
 template <typename T> constexpr decltype(auto) Forward(const T &Arg) { static_assert(!cmp::isDerived<T, std::basic_string_view>); return Arg; }
 
-#if defined (HAS_FMT)
-template <typename ...Args> [[nodiscard]] std::string va(std::string_view Format, const Args& ...args)
-{
-    return fmt::sprintf(Format, Forward<Args>(args)...);
-}
-template <typename ...Args> [[nodiscard]] std::u8string va(std::u8string_view Format, const Args& ...args)
-{
-    return fmt::sprintf(Format, Forward<Args>(args)...);
-}
-template <typename ...Args> [[nodiscard]] std::wstring va(std::wstring_view Format, const Args& ...args)
-{
-    return Encoding::toUNICODE(fmt::sprintf(Encoding::toASCII(Format), Forward<Args>(args)...));
-}
-
-#else
 template <typename ...Args> [[nodiscard]] std::string va_impl(const char *Format, const Args& ...args)
 {
     const auto Size = std::snprintf(nullptr, 0, Format, args...);
@@ -71,5 +55,4 @@ template <typename ...Args> [[nodiscard]] std::wstring va(const std::wstring &Fo
     return Encoding::toUNICODE(va(Encoding::toASCII(Format), Forward<Args>(args)...));
 }
 
-#endif
 #endif

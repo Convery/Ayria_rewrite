@@ -7,10 +7,7 @@
 */
 
 #pragma once
-#include "../Strings/toHexstring.hpp"
-#include "../Constexprhelpers.hpp"
-#include <string_view>
-#include <vector>
+#include <Utilities/Utilities.hpp>
 
 // Tokens of length 0 are dropped unless PreserveNULL = true.
 constexpr std::vector<std::string_view> Tokenizestring(std::string_view Input)
