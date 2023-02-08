@@ -5,10 +5,7 @@
 */
 
 #pragma once
-#include <format>
-#include <thread>
-#include <string>
-#include <mutex>
+#include <Utilities/Utilities.hpp>
 
 // Timed mutex that checks for cyclic locking and long tasks.
 struct Debugmutex_t

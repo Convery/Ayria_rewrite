@@ -5,9 +5,7 @@
 */
 
 #pragma once
-#include <thread>
-#include <atomic>
-#include <intrin.h>
+#include <Utilities/Utilities.hpp>
 
 // STL's atomic_flag uses a log because of ABI..
 struct Spinlock_t
