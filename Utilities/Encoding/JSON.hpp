@@ -329,6 +329,10 @@ namespace JSON
             assert(false);
             return "WTF?";
         }
+        [[nodiscard]] std::string dump() const
+        {
+            return Dump();
+        }
     };
 
     namespace Parsing

@@ -7,73 +7,53 @@
 #pragma once
 #include <Utilities/Utilities.hpp>
 
-// STL's atomic_flag uses a log because of ABI..
+// MS-STL atomic_flag uses a long for ABI.
 struct Spinlock_t
-{    
-    std::atomic<bool> Flag{};
+{
+    std::atomic_flag Flag{};
 
-    void unlock() noexcept { Flag.store(false, std::memory_order_release); }
-    bool try_lock() noexcept { return !Flag.exchange(true, std::memory_order_acquire); }
+    // Modern Intel processors sleep for ~140 cycles rather than the older ~20-40.
+    bool try_lock() noexcept { return !Flag.test_and_set(std::memory_order_acquire); }
+    void unlock() noexcept { assert(Flag.test()); Flag.clear(std::memory_order_release); }
 
     void lock() noexcept
     {
-        // Modern Intel processors prefer exponential backoff for pauses.
-        // TODO(tcn): We should benchmark on AMD and older Intel. 
-        constexpr bool useExponentialbackoff = true;
+        // Common case, no conflicts.
+        if (try_lock()) [[likely]]
+            return;
 
-        // Fancy modern version (0 - 64 mm_pause).
-        if constexpr (useExponentialbackoff)
+        // No sleep.
+        for (size_t i = 0; i < 16; ++i)
         {
-            const int Max = 64;
-            int Current = 1;
-
-            while (!try_lock())
-            {
-                for (int Backoff = Current; Backoff != 0; --Backoff)
-                {
-                    _mm_pause();
-                }
-
-                Current = Current < Max ? Current << 1 : Max;
-            }
+            if (try_lock()) return;
         }
 
-        // Legacy version (0 - 16 mm_pause + sleep fallback)
-        else
+        // Short sleep.
+        for (size_t i = 0; i < 128; ++i)
         {
-            while (!try_lock())
+            // Intrinsic is always scheduled, regardless of if-statements.
+            // So we have it first to avoid static-analysis warnings.
+            _mm_pause();
+
+            if (try_lock()) return;
+        }
+
+        while (!try_lock())
+        {
+            // Medium sleep.
+            for (size_t i = 0; i < 512; ++i)
             {
-                // No sleep.
-                for (size_t i = 0; i < 16; ++i)
-                {
-                    if (try_lock()) return;
-                }
+                // Might be NOP on some CPUs, but 16 pauses should create uOP sleep.
+                _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause();
+                _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause();
+                _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause();
+                _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause();
 
-                // Short sleep.
-                for (size_t i = 0; i < 128; ++i)
-                {
-                    // Intrinsic is always executed, regardless of if-statements.
-                    // So we have it first to avoid static-analysis warnings.
-                    _mm_pause();
-
-                    if (try_lock()) return;
-                }
-
-                // Medium sleep.
-                for (size_t i = 0; i < 512; ++i)
-                {
-                    // Might be NOP on some CPUs, but 16 pauses should create uOP sleep.
-                    _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause(); 
-                    _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause(); 
-                    _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause(); 
-                    _mm_pause(); _mm_pause(); _mm_pause(); _mm_pause(); 
-
-                    if (try_lock()) return;
-                }
-
-                // Long sleep.
-                std::this_thread::yield();
+                if (try_lock()) return;
             }
+
+            // Long sleep.
+            std::this_thread::yield();
         }
     }
 };

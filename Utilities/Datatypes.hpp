@@ -23,12 +23,13 @@
 using Blob_view_t = std::basic_string_view<uint8_t>;
 using Blob_t = std::basic_string<uint8_t>;
 
-// Integer-accurate until +/-256. e.g. 305.0f gets truncated to 304.0f.
+// Integer-accurate until +/-256. e.g. 305.0f gets rounded to 304.0f.
 #if defined(__STDCPP_BFLOAT16_T__)
 using bfloat16_t = std::bfloat16_t;
 #else
 struct bfloat16_t
 {
+    static constexpr float Epsilon = 0.00781250000f;
     uint16_t Value{};
 
     // Currently prefers rounding to truncating, may change in the future.
@@ -53,7 +54,7 @@ struct bfloat16_t
             return 0x7FC1;
 
         // Flush denormals to +0 or -0.
-        if ((Input < 0 ? -Input : Input) < std::numeric_limits<float>::min())
+        if (((Input < 0) ? -Input : Input) < std::numeric_limits<float>::min())
             return (Input < 0) ? 0x8000U : 0;
 
         // Constexpr does not like unions / normal casts.
@@ -91,14 +92,9 @@ struct bfloat16_t
     {
         if (Value == Right.Value) return true;
 
-        constexpr float Epsilon = 0.000977f;
-        if (std::is_constant_evaluated())
-        {
-            const auto Temp = toFloat(Value) - toFloat(Right);
-            return ((Temp >= 0) ? Temp : -Temp) < Epsilon;
-        }
-        else
-            return std::fabs(toFloat(Value) - toFloat(Right)) < Epsilon;
+        const auto Temp = toFloat(Value) - toFloat(Right);
+        const auto ABS = (Temp >= 0) ? Temp : -Temp;
+        return ABS < Epsilon;
     }
 
     constexpr bfloat16_t &operator+=(const bfloat16_t &Right) { *this = (toFloat(*this) + toFloat(Right)); return *this; }
@@ -111,33 +107,35 @@ struct bfloat16_t
     friend constexpr bfloat16_t operator*(const bfloat16_t &Left, const bfloat16_t &Right) { return toFloat(Left) * toFloat(Right); }
     friend constexpr bfloat16_t operator/(const bfloat16_t &Left, const bfloat16_t &Right) { return toFloat(Left) / toFloat(Right); }
 };
+
 #endif
 
-// Integer-accurate until +/-2048. e.g. 2051.0f gets truncated to 2052.0f.
+// Integer-accurate until +/-2048. e.g. 2051.0f gets rounded to 2052.0f.
 #if defined (__STDCPP_FLOAT16_T__)
 using float16_t = std::float16_t;
 #else
 struct float16_t
 {
+    static constexpr float Epsilon = 0.000732421875f;
     uint16_t Value{};
 
     // AVX provides intrinsics for doing this, but seems slower for a single conversion.
     static constexpr float toFloat(const uint16_t Input)
     {
-        const uint32_t Words = uint32_t(Input) << 16;
-        const uint32_t Sign = Words & 0x80000000U;
-        const uint32_t Mantissa = Words + Words;
+        const auto Words = uint32_t(Input) << 16;
+        const auto Sign = Words & 0x80000000U;
+        const auto Mantissa = Words + Words;
 
         // Denormal.
         if (Mantissa < 0x8000000U)
         {
-            const float Denormalized = std::bit_cast<float>((Mantissa >> 17) | 0x3F000000U) - 0.5f;
+            const auto Denormalized = std::bit_cast<float>((Mantissa >> 17) | 0x3F000000U) - 0.5f;
             return std::bit_cast<float>(Sign | std::bit_cast<uint32_t>(Denormalized));
         }
         else
         {
-            const float Scale = std::bit_cast<float>(0x7800000U);
-            const float Normalized = std::bit_cast<float>((Mantissa >> 4) + 0x70000000U) * Scale;
+            const auto Scale = std::bit_cast<float>(0x7800000U);
+            const auto Normalized = std::bit_cast<float>((Mantissa >> 4) + 0x70000000U) * Scale;
             return std::bit_cast<float>(Sign | std::bit_cast<uint32_t>(Normalized));
         }
     }
@@ -147,33 +145,32 @@ struct float16_t
     }
     static constexpr uint16_t fromFloat(const float Input)
     {
-        constexpr float zeroScale = std::bit_cast<float>(0x08800000U);
-        constexpr float infScale = std::bit_cast<float>(0x77800000U);
+        constexpr auto zeroScale = std::bit_cast<float>(0x08800000U);
+        constexpr auto infScale = std::bit_cast<float>(0x77800000U);
 
-        const uint32_t Words = std::bit_cast<uint32_t>(Input);
-        const uint32_t Sign = Words & 0x80000000U;
-        const uint32_t Mantissa = Words + Words;
+        const auto Words = std::bit_cast<uint32_t>(Input);
+        const auto Sign = Words & 0x80000000U;
+        const auto Mantissa = Words + Words;
 
         // Out of range.
         if (Mantissa > 0xFF000000U)
             return (Sign >> 16) | 0x7E00;
 
-        // Don't care about sign of 0.
-        const float ABS = Input > 0 ? Input : -Input;
-        const float Normalized = ABS * (infScale * zeroScale);
-        const uint32_t Bias = std::max(Mantissa & 0xFF000000U, 0x71000000U);
-        const uint32_t Bits = std::bit_cast<uint32_t>(std::bit_cast<float>((Bias >> 1) + 0x07800000U) + Normalized);
+        const auto ABS = (Input >= 0) ? Input : -Input;
+        const auto Normalized = ABS * (infScale * zeroScale);
+        const auto Bias = std::max(Mantissa & 0xFF000000U, 0x71000000U);
+        const auto Bits = std::bit_cast<uint32_t>(std::bit_cast<float>((Bias >> 1) + 0x07800000U) + Normalized);
 
         return (Sign >> 16) | (((Bits >> 13) & 0x00007C00U) + (Bits & 0x00000FFFU));
     }
 
     constexpr operator float() const { return toFloat(Value); }
-    constexpr operator int32_t() const { return int32_t(toFloat(Value)); }
+    constexpr operator int32_t() const { return static_cast<int32_t>(toFloat(Value)); }
 
     constexpr float16_t() = default;
     constexpr float16_t(const float Input) : Value(fromFloat(Input)) {};
     explicit constexpr float16_t(const uint16_t Input) : Value(Input) {}
-    template <std::integral T> constexpr float16_t(const T Input) : float16_t(float(Input)) {}
+    template <std::integral T> constexpr float16_t(const T Input) : float16_t(static_cast<float>(Input)) {}
 
     constexpr bool operator<(const float16_t &Right)  const { return toFloat(Value) < toFloat(Right); }
     constexpr bool operator>(const float16_t &Right)  const { return toFloat(Value) > toFloat(Right); }
@@ -184,14 +181,9 @@ struct float16_t
     {
         if (Value == Right.Value) return true;
 
-        constexpr float Epsilon = 0.000977f;
-        if (std::is_constant_evaluated())
-        {
-            const auto Temp = toFloat(Value) - toFloat(Right);
-            return ((Temp >= 0) ? Temp : -Temp) < Epsilon;
-        }
-        else
-            return std::fabs(toFloat(Value) - toFloat(Right)) < Epsilon;
+        const auto Temp = toFloat(Value) - toFloat(Right);
+        const auto ABS = (Temp >= 0) ? Temp : -Temp;
+        return ABS < Epsilon;
     }
 
     constexpr float16_t &operator+=(const float16_t &Right) { *this = (toFloat(*this) + toFloat(Right)); return *this; }
@@ -204,11 +196,13 @@ struct float16_t
     friend constexpr float16_t operator*(const float16_t &Left, const float16_t &Right) { return toFloat(Left) * toFloat(Right); }
     friend constexpr float16_t operator/(const float16_t &Left, const float16_t &Right) { return toFloat(Left) / toFloat(Right); }
 };
+
 #endif
 
-// Prefer 16-bit alignment over natural alignment (possible performance-hit for vec3_t on x86 in some cases).
+// Prefer 16-bit alignment over natural alignment (possible performance-hit for vec3_t in some cases).
 #pragma pack(push, 2)
 
+// 32-bit.
 template <typename T> struct vec2_t
 {
     T x{}, y{};
@@ -238,6 +232,7 @@ using vec2f = vec2_t<float16_t>;
 using vec2u = vec2_t<uint16_t>;
 using vec2i = vec2_t<int16_t>;
 
+// 48-bit.
 template <typename T> struct vec3_t
 {
     T x{}, y{}, z{};
@@ -267,6 +262,7 @@ using vec3f = vec3_t<float16_t>;
 using vec3u = vec3_t<uint16_t>;
 using vec3i = vec3_t<int16_t>;
 
+// 64-bit.
 template <typename T> struct vec4_t
 {
     union

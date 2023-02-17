@@ -15,9 +15,14 @@
 #if defined (_MSC_VER)
 #define EXPORT_ATTR __declspec(dllexport)
 #define IMPORT_ATTR __declspec(dllimport)
+#define INLINE_ATTR __forceinline
+#define NOINLINE_ATTR __declspec(noinline)
+
 #elif defined (__GNUC__) || defined (__clang__)
 #define EXPORT_ATTR __attribute__((visibility("default")))
 #define IMPORT_ATTR
+#define INLINE_ATTR __attribute__((always_inline))
+#define NOINLINE_ATTR __attribute__((noinline))
 #else
 #error Unknown compiler..
 #endif

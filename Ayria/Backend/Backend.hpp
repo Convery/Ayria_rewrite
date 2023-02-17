@@ -110,7 +110,11 @@ namespace Backend::Plugins
     bool InstallEPHook();
 
     // Broadcast a message to all plugins.
-    void Broadcast(uint32_t MessageID, std::string JSONString);
+    void Broadcast(uint32_t MessageID, const std::string& JSONString);
+    inline void Broadcast(std::string_view Message, const std::string &JSONString)
+    {
+        return Broadcast(Hash::WW32(Message), JSONString);
+    }
 
     // Simply load all plugins from disk.
     void Initialize();
