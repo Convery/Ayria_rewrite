@@ -67,7 +67,7 @@ namespace Hacking
             *(size_t *)(Trampoline + *Oldlength + 1) = (Target + *Oldlength) - (Trampoline + *Oldlength + 5);
         }
 
-        // Stomphook into the trampoline.
+        // Stomphook to the replacement.
         if constexpr (Build::is64bit)
         {
             // JMP [RIP] | FF 25 00 00 00 00 Target
@@ -87,7 +87,7 @@ namespace Hacking
     }
 
     // For when a call isn't what we want.
-    [[noreturn]] inline void Jump(std::uintptr_t Target)
+    [[noreturn]] INLINE_ATTR void Jump(std::uintptr_t Target)
     {
         #if defined(_WIN32)
         CONTEXT Context{ .ContextFlags = CONTEXT_CONTROL };
@@ -118,12 +118,7 @@ namespace Hacking
     }
 
     // For when we want to change our caller.
-    #if defined (_WIN32)
-    __forceinline
-    #else
-    __attribute__((always_inline))
-    #endif
-    void setReturn(std::uintptr_t Target)
+    INLINE_ATTR void setReturn(std::uintptr_t Target)
     {
         #if defined (_MSC_VER)
         *(size_t *)_AddressOfReturnAddress() = Target;
@@ -134,64 +129,12 @@ namespace Hacking
         #endif
     }
 
-    // For when we need an address of a ret.
-    #if defined(_WIN32)
-    __declspec(noinline) static void __stdcall NOP() {}
-    #else
-    __attribute__((noinline)) static void __stdcall NOP() {}
-    #endif
-
-    // Save the context of a thread, sans EIP/RIP. (leaky)
-    inline void setContext(void *Context)
-    {
-        #if defined(_WIN32)
-        CONTEXT Current{ .ContextFlags = CONTEXT_CONTROL };
-        GetThreadContext(GetCurrentThread(), &Current);
-
-        #if defined(_M_X64) || defined(__x86_64__)
-        ((CONTEXT *)Context)->Rip = (size_t)NOP;
-        #else
-        ((CONTEXT *)Context)->Eip = (size_t)NOP;
-        #endif
-
-        SetThreadContext(GetCurrentThread(), (const CONTEXT *)Context);
-        #else
-
-        ucontext_t Current;
-        getcontext(&Current);
-
-        #if defined(_M_X64) || defined(__x86_64__)
-        Context.uc_mcontext.gregs[REG_RIP] = (size_t)NOP;
-        #else
-        Context.uc_mcontext.gregs[REG_EIP] = (size_t)NOP;
-        #endif
-
-        setcontext((ucontext_t *)Context);
-        #endif
-    }
-    inline void *getContext()
-    {
-        #if defined(_WIN32)
-        CONTEXT Current{ .ContextFlags = CONTEXT_CONTROL };
-        GetThreadContext(GetCurrentThread(), &Current);
-
-        return new CONTEXT(Current);
-        #else
-
-        ucontext_t Current;
-        getcontext(&Current);
-
-        return new ucontext_t(std::move(Current));
-        #endif
-    }
-
     // Helpers for when the user prefers pointers.
     template <typename T, typename U> auto Stomphook(T Target, U Replacement) { return Stomphook(std::uintptr_t(Target), std::uintptr_t(Replacement)); }
     template <typename T, typename U> auto Callhook(T Target, U Replacement) { return Callhook(std::uintptr_t(Target), std::uintptr_t(Replacement)); }
 
+    // For PE-IAT hooking, find the pointer that points to the wanted address.
     #if defined(_WIN32)
-
-    // For IAT hooking, find the pointer that points to the wanted address.
     inline std::uintptr_t getIATpointer(HMODULE Targetmodule, std::uintptr_t Targetaddress)
     {
         // Traverse the PE header.
@@ -242,6 +185,27 @@ namespace Hacking
 
         return getIATpointer(Targetmodule, std::uintptr_t(Target));
     }
+    #endif
 
+    // Should really be an intrinsic..
+    #if defined (_MSC_VER)
+    #pragma section(".text")
+    __declspec(allocate(".text")) static constexpr uint8_t PUSHA32[] = { 0x50, 0x53, 0x51, 0x52, 0x55, 0x57, 0x56, 0xC3 };
+    __declspec(allocate(".text")) static constexpr uint8_t POPA32[]  = { 0x5E, 0x5F, 0x5D, 0x5A, 0x59, 0x5B, 0x58, 0xC3 };
+    __declspec(allocate(".text")) static constexpr uint8_t PUSHA64[] = { 0x50, 0x53, 0x51, 0x52, 0x55, 0x57, 0x56, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0xC3 };
+    __declspec(allocate(".text")) static constexpr uint8_t POPA64[]  = { 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5E, 0x5F, 0x5D, 0x5A, 0x59, 0x5B, 0x58, 0xC3 };
+    #else
+    __attribute__((section(".text#"))) static constexpr uint8_t PUSHA32[] = { 0x50, 0x53, 0x51, 0x52, 0x55, 0x57, 0x56, 0xC3 };
+    __attribute__((section(".text#"))) static constexpr uint8_t POPA32[]  = { 0x5E, 0x5F, 0x5D, 0x5A, 0x59, 0x5B, 0x58, 0xC3 };
+    __attribute__((section(".text#"))) static constexpr uint8_t PUSHA64[] = { 0x50, 0x53, 0x51, 0x52, 0x55, 0x57, 0x56, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0xC3 };
+    __attribute__((section(".text#"))) static constexpr uint8_t POPA64[]  = { 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5E, 0x5F, 0x5D, 0x5A, 0x59, 0x5B, 0x58, 0xC3 };
+    #endif
+
+    #if defined(_M_X64) || defined(__x86_64__)
+    static constinit auto PUSHA = (void (*)())&PUSHA64;
+    static constinit auto POPA = (void (*)())&POPA64;
+    #else
+    static constinit auto PUSHA = (void (*)())&PUSHA32;
+    static constinit auto POPA = (void (*)())&POPA32;
     #endif
 }

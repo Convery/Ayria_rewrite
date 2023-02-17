@@ -22,20 +22,12 @@ namespace Backend::Plugins
     static std::uintptr_t EPTrampoline{};
     static size_t EPSize{};
 
-    // Helpers for readign the header.
-    static std::uintptr_t getEntrypoint()
-    {
-        // Module(NULL) gets the host application.
-        const HMODULE Modulehandle = GetModuleHandleA(NULL);
-        if (!Modulehandle) return NULL;
-
-        // Traverse the PE header.
-        const auto *DOSHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(Modulehandle);
-        const auto *NTHeader = PIMAGE_NT_HEADERS(std::uintptr_t(Modulehandle) + DOSHeader->e_lfanew);
-        return reinterpret_cast<std::uintptr_t>(Modulehandle) + NTHeader->OptionalHeader.AddressOfEntryPoint;
-    }
+    // Helpers for reading the header.
     static std::uintptr_t getTLSEntry()
     {
+        #if !defined (_WIN32)
+        return NULL;
+        #else
         // Module(NULL) gets the host application.
         const HMODULE Modulehandle = GetModuleHandleA(NULL);
         if (!Modulehandle) return NULL;
@@ -47,6 +39,34 @@ namespace Backend::Plugins
 
         if (Directory.Size == 0) return NULL;
         return std::uintptr_t(Modulehandle) + Directory.VirtualAddress;
+        #endif
+    }
+    static std::uintptr_t getPEEntrypoint()
+    {
+        #if !defined (_WIN32)
+        return NULL;
+        #else
+        // Module(NULL) gets the host application.
+        const HMODULE Modulehandle = GetModuleHandleA(NULL);
+        if (!Modulehandle) return NULL;
+
+        // Traverse the PE header.
+        const auto *DOSHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(Modulehandle);
+        const auto *NTHeader = PIMAGE_NT_HEADERS(std::uintptr_t(Modulehandle) + DOSHeader->e_lfanew);
+        return reinterpret_cast<std::uintptr_t>(Modulehandle) + NTHeader->OptionalHeader.AddressOfEntryPoint;
+        #endif
+    }
+    static std::uintptr_t getELFEntrypoint()
+    {
+        #if defined (_MSC_VER)
+        return NULL;
+        #else
+        // dlopen(NULL) gets the host application.
+        void *Modulehandle = dlopen(NULL, RTLD_LAZY);
+        if(!Modulehandle) return NULL;
+
+        return std::uintptr_t(dlsym(Modulehandle, "__libc_start_main"));
+        #endif
     }
 
     // Initialize the plugins.
@@ -74,28 +94,27 @@ namespace Backend::Plugins
     }
 
     // Broadcast a message to all plugins.
-    void Broadcast(uint32_t MessageID, std::string JSONString)
+    void Broadcast(uint32_t MessageID, const std::string &JSONString)
     {
-        const auto Checksum = Hash::WW32(JSONString);
-
-        for (const auto Handle : Pluginhandles)
+        if constexpr (Build::isDebug)
         {
-            if (const auto Func = GetProcAddress(Handle, "onMessage"); Func)
+            const auto Checksum = Hash::WW32(JSONString);
+
+            for (const auto Handle : Pluginhandles) if (const auto Func = GetProcAddress(Handle, "onMessage"); Func)
             {
                 (reinterpret_cast<void(__cdecl *)(unsigned int, const char *, unsigned int)>(Func))(MessageID, JSONString.c_str(), (unsigned int)JSONString.size());
-                if (Checksum != Hash::WW32(JSONString)) [[unlikely]]
-                {
-                    Errorprint("Plugin has malformed onMessage handler, unloading.");
-                    FreeLibrary(Handle);
-                }
+
+                // Verify that the plugin respected const-ness.
+                assert(Checksum == Hash::WW32(JSONString));
             }
         }
-    }
-
-    // Should be called from platformwrapper or similar plugins once application is done loading.
-    extern "C" EXPORT_ATTR void __cdecl onInitialized()
-    {
-        Notifyinitialized();
+        else
+        {
+            for (const auto Handle : Pluginhandles) if (const auto Func = GetProcAddress(Handle, "onMessage"); Func)
+            {
+                (reinterpret_cast<void(__cdecl *)(unsigned int, const char *, unsigned int)>(Func))(MessageID, JSONString.c_str(), (unsigned int)JSONString.size());
+            }
+        }
     }
 
     // Simply load all plugins from disk.
@@ -126,7 +145,22 @@ namespace Backend::Plugins
         }() };
     }
 
-    // Callbacks from the hooks.
+    // Callbacks from the hooks, __libc_start_main for ELF.
+    int ELFCallback(int (*main) (int, char **, char **), int argc, char **ubp_av, void (*init) (), void (*fini) (), void (*rtld_fini) (), void *stack_end)
+    {
+        if (const auto EP = getELFEntrypoint())
+        {
+            // Restore the code in-case the app does integrity checking.
+            const auto RTTI = Hacking::Make_writeable(EP, EPSize);
+            std::memcpy((void *)EP, (void *)EPTrampoline, EPSize);
+        }
+
+        // Load all plugins.
+        Initialize();
+
+        // Resume via the trampoline.
+        return (reinterpret_cast<decltype(ELFCallback) *>(EPTrampoline))(main, argc, ubp_av, init, fini, rtld_fini, stack_end);
+    }
     void __stdcall TLSCallback(PVOID a, DWORD b, PVOID c)
     {
         if (const auto Directory = (PIMAGE_TLS_DIRECTORY)getTLSEntry())
@@ -151,10 +185,10 @@ namespace Backend::Plugins
                 reinterpret_cast<decltype(TLSCallback) *>(*Callbacks)(a, b, c);
         }
     }
-    void EPCallback()
+    void PECallback()
     {
         // Read the PE header.
-        if (const auto EP = getEntrypoint())
+        if (const auto EP = getPEEntrypoint())
         {
             // Restore the code in-case the app does integrity checking.
             const auto RTTI = Hacking::Make_writeable(EP, EPSize);
@@ -165,7 +199,7 @@ namespace Backend::Plugins
         Initialize();
 
         // Resume via the trampoline.
-        (reinterpret_cast<decltype(EPCallback) *>(EPTrampoline))();
+        (reinterpret_cast<decltype(PECallback) *>(EPTrampoline))();
     }
 
     // Different types of hooking.
@@ -189,15 +223,33 @@ namespace Backend::Plugins
     }
     bool InstallEPHook()
     {
-        if (const auto EP = getEntrypoint())
+        // Most likely we are looking for a PE(+) file.
+        if (const auto EP = getPEEntrypoint())
         {
-            const auto Optional = Hacking::Callhook(EP, EPCallback);
+            const auto Optional = Hacking::Callhook(EP, PECallback);
             if (!Optional) return false;
 
             std::tie(EPTrampoline, EPSize) = *Optional;
             return true;
         }
 
+        // But maybe
+        if (const auto EP = getELFEntrypoint())
+        {
+            const auto Optional = Hacking::Callhook(EP, ELFCallback);
+            if (!Optional) return false;
+
+            std::tie(EPTrampoline, EPSize) = *Optional;
+            return true;
+        }
+
+
         return false;
+    }
+
+    // Should be called from platformwrapper or similar plugins once application is done loading.
+    extern "C" EXPORT_ATTR void __cdecl onInitialized()
+    {
+        Notifyinitialized();
     }
 }
