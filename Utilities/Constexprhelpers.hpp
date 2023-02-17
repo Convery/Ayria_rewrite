@@ -39,9 +39,13 @@ namespace cmp
     template <typename T> concept Char_t = std::is_same_v<std::remove_const_t<T>, char> || std::is_same_v<std::remove_const_t<T>, char8_t>;
     template <typename T> concept WChar_t =  std::is_same_v<std::remove_const_t<T>, wchar_t>  || std::is_same_v<std::remove_const_t<T>, char16_t>;
 
-    // Helpers for type deduction.
-    template <class, template <class...> class> constexpr bool isDerived = false;
-    template <template <class...> class T, class... Args> constexpr bool isDerived<T<Args...>, T> = true;
+    // Fully typed instantiation.
+    template <typename Type, template <typename ...> class Template> constexpr bool isDerived = false;
+    template <template <typename ...> class Template, typename... Types> constexpr bool isDerived<Template<Types...>, Template> = true;
+
+    // Partially typed instantiation.
+    template <typename Type, template<typename, auto> class Template> constexpr bool isDerivedEx = false;
+    template <template <typename, auto> class Template, typename T, auto A> constexpr bool isDerivedEx<Template<T, A>, Template> = true;
 
     // Helper to avoid nested conditionals in templates.
     template <bool Conditional, typename T> struct Case_t : std::bool_constant<Conditional> { using type = T; };

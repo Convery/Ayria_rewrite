@@ -233,14 +233,14 @@ struct Bytebuffer_t
         if constexpr (std::is_enum_v<Type>) return toID<std::underlying_type_t<Type>>();
 
         // Vectors are either arrays or blobs of data.
-        if constexpr (cmp::isDerived<Type, std::vector> || requires { cmp::isDerived<Type, std::array>; } || requires { cmp::isDerived<Type, std::span>; })
+        if constexpr (cmp::isDerived<Type, std::vector> || cmp::isDerivedEx<Type, std::array> || cmp::isDerivedEx<Type, std::span> )
         {
             // Do not use spans for strings, they are a headache to deal with.
-            if constexpr (requires { cmp::isDerived<Type, std::span>; })
+            if constexpr (cmp::isDerivedEx<Type, std::span>)
             {
-                if constexpr (cmp::isDerived<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char>) assert(false);
-                if constexpr (cmp::isDerived<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char8_t>) assert(false);
-                if constexpr (cmp::isDerived<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, wchar_t>) assert(false);
+                if constexpr (cmp::isDerivedEx<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char>) assert(false);
+                if constexpr (cmp::isDerivedEx<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char8_t>) assert(false);
+                if constexpr (cmp::isDerivedEx<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, wchar_t>) assert(false);
             }
 
             if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, uint8_t>) return BB_BLOB;
@@ -371,7 +371,7 @@ struct Bytebuffer_t
         }
         return Result;
     }
-    template <typename Type> void Write(Type &Value, bool Typechecked = true)
+    template <typename Type> void Write(const Type &Value, bool Typechecked = true)
     {
         // User-specified serialization.
         if constexpr (requires { Value.Serialize(*this); }) return Value.Serialize(*this);
@@ -403,7 +403,7 @@ struct Bytebuffer_t
             rawWrite(sizeof(TypeID), &TypeID);
 
         // Array of values.
-        if constexpr (cmp::isDerived<Type, std::vector> || requires { cmp::isDerived<Type, std::array>; } || requires { cmp::isDerived<Type, std::span>; })
+        if constexpr (cmp::isDerived<Type, std::vector> || cmp::isDerivedEx<Type, std::array> || cmp::isDerivedEx<Type, std::span>)
         {
             // Array layout, total size and element count.
             Write<uint32_t>(uint32_t(sizeof(typename Type::value_type) * Value.size()));
@@ -436,7 +436,8 @@ struct Bytebuffer_t
         // POD.
         if constexpr (std::is_integral_v<Type> || std::is_floating_point_v<Type>)
         {
-            Value = cmp::toLittle(Value);
+            const auto Temp = cmp::toLittle(Value);
+            rawWrite(sizeof(Type), &Temp);
         }
         else rawWrite(sizeof(Type), &Value);
     }
@@ -848,14 +849,24 @@ namespace Bytebuffer
         }
     }
 
-    static Bytebuffer_t fromStruct(const auto &Object)
+    static Bytebuffer_t fromStruct(const auto &Object, bool Typechecked)
     {
         Bytebuffer_t Buffer{};
 
-        Members(Object, [&](auto && ...Items) -> void
+        if (!Typechecked)
         {
-            ((Buffer << Items), ...);
-        });
+            Members(Object, [&](auto && ...Items) -> void
+            {
+                ((Buffer.Write(Items, false)), ...);
+            });
+        }
+        else
+        {
+            Members(Object, [&](auto && ...Items) -> void
+            {
+                ((Buffer << Items), ...);
+            });
+        }
 
         return Buffer;
     }
