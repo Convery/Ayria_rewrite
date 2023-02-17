@@ -78,6 +78,9 @@ namespace Encoding
     // Length needed to represent a specific codepoint.
     constexpr size_t Sequencelength(Controlcode_t Code)
     {
+        if (Code == 0) [[unlikely]]
+            return 0;
+
         if ((Code & 0x80) == 0x00) return 1;
         if ((Code & 0xE0) == 0xC0) return 2;
         if ((Code & 0xF0) == 0xE0) return 3;
@@ -85,7 +88,14 @@ namespace Encoding
         if ((Code & 0xFC) == 0xF8) return 5;
         if ((Code & 0xFE) == 0xFC) return 6;
 
-        return 1;   // Fallback.
+        // In the middle of a sequence.
+        if ((Code & 0xC0) == 0x80) [[unlikely]]
+        {
+            if (!std::is_constant_evaluated())
+                assert(false);
+        }
+
+        return 0;
     }
     constexpr size_t Sequencelength(Codepoint_t Code)
     {
@@ -97,14 +107,16 @@ namespace Encoding
         if (Code < 0x80000000) return 6;
 
         // Fallback.
-        return 1;
+        return 0;
     }
 
     // Conversion between a 32-bit codepoint and a <= 6 byte sequence.
     constexpr Codepoint_t toCodepoint(std::u8string_view Sequence)
     {
         const auto Wantedsize = Sequencelength(Sequence.front());
-        if (Wantedsize > Sequence.size()) return 0;
+        if (!std::is_constant_evaluated()) assert(Wantedsize);
+
+        if (!Wantedsize || (Wantedsize > Sequence.size())) return 0;
 
         if (Wantedsize == 1) return static_cast<Codepoint_t>(Sequence[0]);
 
@@ -203,8 +215,14 @@ namespace Encoding
     }
     constexpr std::u8string fromCodepoint(Codepoint_t Code)
     {
+        const auto Size = Sequencelength(Code);
         std::u8string Result{};
-        Result.reserve(Sequencelength(Code));
+        Result.reserve(Size);
+
+        // Invalid codepoint.
+        if (!std::is_constant_evaluated()) assert(Size);
+        if (Size == 0) [[unlikely]]
+            return Result;
 
         do
         {
@@ -302,7 +320,7 @@ namespace Encoding
         return toUNICODE(narrowPoint<asUTF16>(Code));
     }
 
-    // We do not check for malformed sequences.
+    // We do not validate sequences.
     constexpr std::wstring toUNICODE(std::u8string_view Input)
     {
         std::wstring Buffer{};
@@ -312,7 +330,8 @@ namespace Encoding
         {
             const auto Codepoint = toCodepoint(Input);
             const auto Size = Sequencelength(Codepoint);
-            if (!std::is_constant_evaluated()) assert(Codepoint);
+            if (!std::is_constant_evaluated()) { assert(Codepoint); assert(Size); }
+            if (Size == 0 || Codepoint == 0) [[unlikely]] return Buffer;
 
             // Single-byte sequence is ASCII (common case).
             if (Size > 3) [[unlikely]] Buffer.append(widePoint(Codepoint));
@@ -338,7 +357,8 @@ namespace Encoding
         {
             const auto Codepoint = toCodepoint(Input);
             const auto Size = Sequencelength(Codepoint);
-            if (!std::is_constant_evaluated()) assert(Codepoint);
+            if (!std::is_constant_evaluated()) { assert(Codepoint); assert(Size); }
+            if (Size == 0) [[unlikely]] return Buffer;
 
             // Single-byte sequence is ASCII (common case).
             if (Size != 1) [[unlikely]] Buffer.append(narrowPoint(Codepoint));
@@ -485,7 +505,13 @@ namespace UTF8
         size_t Size{};
         for (auto it = Input.begin(); it != Input.end();)
         {
-            it += Encoding::Sequencelength(*it);
+            const auto Length = Encoding::Sequencelength(*it);
+
+            if (!std::is_constant_evaluated()) assert(Length);
+            if (Length == 0) [[unlikely]]
+                return Size;
+
+            it += Length;
             Size++;
         }
 
@@ -495,7 +521,13 @@ namespace UTF8
     {
         for (auto it = Input.begin(); it != Input.end();)
         {
-            if (Index-- > 0) it += Encoding::Sequencelength(*it);
+            const auto Length = Encoding::Sequencelength(*it);
+
+            if (!std::is_constant_evaluated()) assert(Length);
+            if (Length == 0) [[unlikely]]
+                return Input.size();
+
+            if (Index-- > 0) it += Length;
             else return it - Input.begin();
         }
 
@@ -506,7 +538,13 @@ namespace UTF8
     {
         for (auto it = Input.begin(); it != Input.end();)
         {
-            if (Index-- > 0) it += Encoding::Sequencelength(*it);
+            const auto Length = Encoding::Sequencelength(*it);
+
+            if (!std::is_constant_evaluated()) assert(Length);
+            if (Length == 0) [[unlikely]]
+                return Input.end();
+
+            if (Index-- > 0) it += Length;
             else return it;
         }
 
@@ -516,7 +554,13 @@ namespace UTF8
     {
         for (auto it = Input.begin(); it != Input.end();)
         {
-            if (Index-- > 0) it += Encoding::Sequencelength(*it);
+            const auto Length = Encoding::Sequencelength(*it);
+
+            if (!std::is_constant_evaluated()) assert(Length);
+            if (Length == 0) [[unlikely]]
+                return Input.end();
+
+            if (Index-- > 0) it += Length;
             else return it;
         }
 

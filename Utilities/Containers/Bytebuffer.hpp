@@ -289,6 +289,9 @@ struct Bytebuffer_t
         constexpr auto ExpectedID = toID<Type>();
         const auto StoredID = Peek();
 
+        // Can't read into const storage.
+        static_assert(!cmp::isDerived<Type, std::basic_string_view>, "Can not write to a string view.");
+
         // Verify that the requested type is compatible.
         if (Typechecked || ExpectedID > BB_ARRAY) [[likely]]
         {
@@ -359,6 +362,11 @@ struct Bytebuffer_t
             {
                 // Strings are null-terminated, so just initialize from the pointer.
                 Buffer = Type((typename Type::value_type *)data(true));
+
+                // Sanity checking.
+                if constexpr (std::is_same_v<typename Type::value_type, char>) assert(std::isalnum(Buffer.front()));
+                if constexpr (std::is_same_v<typename Type::value_type, char8_t>) assert(std::isalnum(Buffer.front()));
+
                 return rawRead((Buffer.size() + 1) * sizeof(typename Type::value_type));
             }
         }
@@ -417,17 +425,23 @@ struct Bytebuffer_t
         }
 
         // Strings and blobs.
-        if constexpr (cmp::isDerived<Type, std::basic_string>)
+        if constexpr (cmp::isDerived<Type, std::basic_string> || cmp::isDerived<Type, std::basic_string_view>)
         {
             if constexpr (std::is_same_v<Type, Blob_t>)
             {
                 Write<uint32_t>((uint32_t)Value.size(), Typechecked);
                 rawWrite(Value.size(), Value.data());
             }
-            else
+            else if constexpr (cmp::isDerived<Type, std::basic_string>)
             {
                 // Write as null-terminated string.
                 rawWrite((Value.size() + 1) * sizeof(typename Type::value_type), Value.c_str());
+            }
+            else
+            {
+                // Write as null-terminated string.
+                rawWrite((Value.size()) * sizeof(typename Type::value_type), Value.data());
+                WriteNULL();
             }
 
             return;
@@ -457,6 +471,11 @@ struct Bytebuffer_t
     }
 
     // Helper for reading and writing.
+    template <cmp::Char_t T, size_t N> Bytebuffer_t &operator<<(const T(&Input)[N])
+    {
+        Write(std::basic_string_view<T>(Input));
+        return *this;
+    }
     template <typename Type> Bytebuffer_t &operator<<(Type Value)
     {
         Write(Value);
@@ -488,7 +507,7 @@ struct Bytebuffer_t
         uint8_t TypeID;
 
         Output << "{\n";
-        while ((TypeID = Reader.Peek()))
+        while ((TypeID = Reader.Peek()) != BB_NONE)
         {
             Output << "    ";
 

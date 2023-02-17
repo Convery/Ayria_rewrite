@@ -22,6 +22,9 @@ namespace Encoding
             if (Spaced) Output += ' ';
         }
 
+        while (Output.back() == ' ')
+            Output.pop_back();
+
         return Output;
     }
     template <cmp::Byte_t T, size_t N> constexpr std::string toHexstringU(const cmp::Container_t<T, N> &Input, bool Spaced = false)
@@ -35,6 +38,9 @@ namespace Encoding
             Output += Mapping[uint8_t(Item) & 0x0F];
             if (Spaced) Output += ' ';
         }
+
+        while (Output.back() == ' ')
+            Output.pop_back();
 
         return Output;
     }
@@ -50,6 +56,9 @@ namespace Encoding
             if (Spaced) Output += ' ';
         }
 
+        while (Output.back() == ' ')
+            Output.pop_back();
+
         return Output;
     }
     template <cmp::Range_t T> requires (sizeof(typename T::value_type) == 1) constexpr std::string toHexstringU(const T &Input, bool Spaced = false)
@@ -63,6 +72,9 @@ namespace Encoding
             Output += Mapping[uint8_t(Item) & 0x0F];
             if (Spaced) Output += ' ';
         }
+
+        while (Output.back() == ' ')
+            Output.pop_back();
 
         return Output;
     }

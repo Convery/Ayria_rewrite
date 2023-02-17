@@ -282,6 +282,30 @@ int main()
         return true;
     }();
 
+    // Containers/Bytebuffer.hpp
+    [[maybe_unused]] const auto Bytebuffertest = []() -> bool
+    {
+        Bytebuffer_t Buffer{};
+
+        Buffer << uint32_t(42);
+        Buffer.Write(uint8_t(2));
+        Buffer.Write(uint8_t(3), false);
+        Buffer << "Hello";
+
+        const auto Dump = Buffer.to_hex();
+        if ("0B 2A 00 00 00 07 02 03 02 48 65 6C 6C 6F 00"s != Dump)
+            printf("BROKEN: Bytebuffer writing\n");
+
+        // Reset the read/write iterator.
+        Buffer.Rewind();
+
+        if (42 != Buffer.Read<uint32_t>()) printf("BROKEN: Bytebuffer reading\n");
+        if (2 != Buffer.Read<uint8_t>()) printf("BROKEN: Bytebuffer reading\n");
+        if (3 != Buffer.Read<uint8_t>(false)) printf("BROKEN: Bytebuffer reading\n");
+        if ("Hello"s != Buffer.Read<std::string>()) printf("BROKEN: Bytebuffer reading\n");
+
+        return true;
+    }();
 
 
     printf("Testing done..\n");
