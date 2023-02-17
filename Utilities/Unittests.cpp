@@ -12,9 +12,6 @@ int main()
 {
     printf("Running tests..\n");
 
-    system("calc.exe");
-    LoadLibraryA("apphelp.dll");
-
     // Utilities.hpp
     [[maybe_unused]] const auto Utilitiestest = []() -> bool
     {
@@ -242,16 +239,19 @@ int main()
     [[maybe_unused]] const auto Tokenizetest = []() -> bool
     {
         // Without NULL tokens. (..., false).size()
-        static_assert(4 == strSplit("ab,c,,,,,d,e", ',').size(), "BROKEN: strSplitA");
-        static_assert(4 == strSplit(L"ab,c,,,,,d,e", L',').size(), "BROKEN: strSplitW");
+        static_assert(4 == Stringsplit("ab,c,,,,,d,e", ',').size(), "BROKEN: StringsplitA");
+        static_assert(4 == Stringsplit(L"ab,c,,,,,d,e", L',').size(), "BROKEN: StringsplitW");
+        static_assert(4 == Stringsplit(u8"ab,c,,,,,d,e", u8',').size(), "BROKEN: StringsplitU8");
 
         // Preserve NULL tokens.
-        static_assert(8 == strSplit("ab,c,,,,,d,e", ',', true).size(), "BROKEN: strSplitA");
-        static_assert(8 == strSplit(L"ab,c,,,,,d,e", L',', true).size(), "BROKEN: strSplitW");
+        static_assert(8 == Stringsplit("ab,c,,,,,d,e", ',', true).size(), "BROKEN: StringsplitA");
+        static_assert(8 == Stringsplit(L"ab,c,,,,,d,e", L',', true).size(), "BROKEN: StringsplitW");
+        static_assert(8 == Stringsplit(u8"ab,c,,,,,d,e", u8',', true).size(), "BROKEN: StringsplitU8");
 
         // Splits on ' ' and ", dropping anything in between. = { "a", "b c ", "d" }
         static_assert(3 == Tokenizestring(R"(a "b c "    "" d)").size(), "BROKEN: TokenizestringA");
         static_assert(3 == Tokenizestring(LR"(a "b c "    "" d)").size(), "BROKEN: TokenizestringW");
+        static_assert(3 == Tokenizestring(u8R"(a "b c "    "" d)").size(), "BROKEN: TokenizestringU8");
 
         return true;
     }();
@@ -259,7 +259,7 @@ int main()
     // Containers/Ringbuffer.hpp
     [[maybe_unused]] const auto Ringbuffertest = []() -> bool
     {
-        std::array<int, 6> Rangetest;
+        std::array<int, 6> Rangetest{};
         Ringbuffer_t<int, 3> Buffer;
 
         // Insert 4 elements, overflows.
@@ -273,8 +273,8 @@ int main()
             printf("BROKEN: Ringbuffer core\n");
 
         // Ensure that ranges are supported.
-        for (const auto &[Index, Value] : Enumerate(Buffer | std::views::reverse)) Rangetest[Index] = Value;
-        for (const auto &[Index, Value] : Enumerate(Buffer, Buffer.size())) Rangetest[Index] = Value;
+        std::ranges::copy(Buffer | std::views::reverse, Rangetest.begin());
+        for (const auto &[Index, Value] : Enumerate(Buffer, 3)) Rangetest[Index] = Value;
 
         if (Rangetest != std::array{ 2, 3, 4, 4, 3, 2 })
             printf("BROKEN: Ringbuffer ranges\n");

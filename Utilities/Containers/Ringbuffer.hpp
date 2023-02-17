@@ -75,9 +75,7 @@ class Ringbuffer_t
 
     // STL compatibility.
     [[nodiscard]] auto end() const noexcept { return std::default_sentinel_t{}; }
-    [[nodiscard]] auto rend() const noexcept { return std::default_sentinel_t{}; }
-    [[nodiscard]] auto begin() const noexcept { return Iterator_t{ Advance(Head, -1), Size, Storage.data() }; }
-    [[nodiscard]] auto rbegin() const noexcept { return std::reverse_iterator(Iterator_t{ Head, Size, Storage.data() }); }
+    [[nodiscard]] auto begin() const noexcept { return std::counted_iterator{ Iterator_t{ Advance(Head, -1), Size, Storage.data() }, Size }; }
 
     // STL-like modifiers.
     void push_back(const T &Value) noexcept
