@@ -109,8 +109,6 @@ namespace Backend::Synchronization
             {
                 Query("DELETE FROM Syncpackets WHERE (rowid = ?);", Row).Execute();
             }
-
-
         }
     }
 

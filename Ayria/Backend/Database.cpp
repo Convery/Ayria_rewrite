@@ -136,6 +136,29 @@ namespace Backend::Database
 
         Database << "PRAGMA incremental_vacuum;";
         Database << "PRAGMA optimize;";
+
+        // If this is an in-memory DB, try to flush to disk.
+        const auto Filename = sqlite3_db_filename(&*DBConnection, "main");
+        if (!Filename || ""s == Filename)
+        {
+            sqlite3 *Ptr{};
+            auto Result = sqlite3_open_v2("./Ayria/Client.sqlite", &Ptr, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
+            if (Result == SQLITE_OK)
+            {
+                const auto Backup = sqlite3_backup_init(Ptr, "main", &*DBConnection, "main");
+                if (Backup)
+                {
+                    (void)sqlite3_backup_step(Backup, -1);
+                    (void)sqlite3_backup_finish(Backup);
+                }
+
+                sqlite3_close_v2(Ptr);
+            }
+            else
+            {
+                Infoprint("Database could not be saved.");
+            }
+        }
     }
 
     // Open the database for writing.
@@ -147,7 +170,7 @@ namespace Backend::Database
 
             // :memory: should never fail unless the client has more serious problems.
             auto Result = sqlite3_open_v2("./Ayria/Client.sqlite", &Ptr, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
-            if (Result != SQLITE_OK) Result = sqlite3_open_v2(":memory:", &Ptr, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
+            if (Result != SQLITE_OK) Result = sqlite3_open_v2("file:Ayria?mode=memory&cache=shared", &Ptr, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI, nullptr);
             assert(Result == SQLITE_OK);
 
             // Log errors in debug-mode.
