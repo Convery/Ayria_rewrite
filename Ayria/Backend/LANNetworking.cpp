@@ -12,19 +12,9 @@ namespace Backend::Network::LANNetworking
     constexpr uint16_t Broadcastport = Hash::FNV1_32("Ayria"sv) & 0xFFFF;   // 14985
 
     constexpr sockaddr_in Multicast{ AF_INET, cmp::toBig(Broadcastport), {{.S_addr = cmp::toBig(Broadcastaddress)}} };
+    static std::queue<Blob_t> Packetqueue{};
     static size_t Broadcastsocket{};
     static Spinlock_t Threadsafe;
-
-    // Can't guarantee initialization order.
-    struct Singleton_t
-    {
-        std::queue<Blob_t> Packetqueue{};
-    };
-    static Singleton_t &getSingleton()
-    {
-        static Singleton_t Static{};
-        return Static;
-    }
 
     // Broadcast to the local network.
     static void Publish(const Blob_t &Packet)
@@ -61,14 +51,14 @@ namespace Backend::Network::LANNetworking
         auto Timeout{ Defaulttimeout };
 
         // If there's any delayed packets, push them.
-        if (!getSingleton().Packetqueue.empty()) [[unlikely]]
+        if (!Packetqueue.empty()) [[unlikely]]
         {
             do
             {
-                Publish(getSingleton().Packetqueue.front());
-                getSingleton().Packetqueue.pop();
+                Publish(Packetqueue.front());
+                Packetqueue.pop();
 
-            } while (!getSingleton().Packetqueue.empty());
+            } while (!Packetqueue.empty());
         }
 
         // Check if there's any data available for us.
@@ -150,7 +140,7 @@ namespace Backend::Network
     {
         if (Delayed)
         {
-            LANNetworking::getSingleton().Packetqueue.push(Packet);
+            LANNetworking::Packetqueue.push(Packet);
         }
         else
         {

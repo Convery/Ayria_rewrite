@@ -8,16 +8,8 @@
 
 namespace Backend::Synchronization
 {
-    struct Singleton_t
-    {
-        Hashmap<uint32_t, Hashset<Callback_t>> Messagehandlers{};
-        Hashset<int64_t> Modifiedrows{};
-    };
-    static Singleton_t &getSingleton()
-    {
-        static Singleton_t Static{};
-        return Static;
-    }
+    static Hashmap<uint32_t, Hashset<Callback_t>> Messagehandlers{};
+    static Hashset<int64_t> Modifiedrows{};
 
     // Create and insert messages into the database.
     Blob_t Createmessage(uint32_t Messagetype, const Bytebuffer_t &Payload)
@@ -59,7 +51,7 @@ namespace Backend::Synchronization
         PS >> RowID;
 
         // Mark for processing next frame (if not ours).
-        if (Publickey != Global.Publickey) getSingleton().Modifiedrows.insert(RowID);
+        if (Publickey != Global.Publickey) Modifiedrows.insert(RowID);
 
         // Update timestamps.
         int64_t First{}, Last{};
@@ -70,20 +62,20 @@ namespace Backend::Synchronization
     // Parse a message and insert into the client row.
     void Register(uint32_t Messagetype, Callback_t Callback)
     {
-        getSingleton().Messagehandlers[Messagetype].insert(Callback);
+        Messagehandlers[Messagetype].insert(Callback);
     }
 
     // Check for new inserts every 50ms.
     static void __cdecl Poll()
     {
         Hashset<int64_t> Rows{};
-        getSingleton().Modifiedrows.swap(Rows);
+        Modifiedrows.swap(Rows);
 
         for (const auto Row : Rows)
         {
             Query("SELECT * FROM Syncpacket WHERE rowid = ?;", Row) >> [&](const std::u8string &Publickey, const std::u8string &, uint32_t Messagetype, int64_t Timestamp, const Blob_t &Data)
             {
-                if (getSingleton().Messagehandlers.contains(Messagetype))
+                if (Messagehandlers.contains(Messagetype))
                 {
                     // Known input size.
                     std::array<char8_t, Base58::Encodesize(sizeof(qDSA::Publickey_t))> Fixedsize{};
@@ -92,7 +84,7 @@ namespace Backend::Synchronization
                     const auto Payload = Bytebuffer_t(Base85::Decode(Data));
                     const auto PK = Base58::Decode(Fixedsize);
 
-                    for (const auto Handler : getSingleton().Messagehandlers[Messagetype])
+                    for (const auto Handler : Messagehandlers[Messagetype])
                     {
                         Handler(PK, Row, Timestamp, Data);
                     }
