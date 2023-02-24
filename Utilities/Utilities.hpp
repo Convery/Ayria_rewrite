@@ -67,6 +67,7 @@ using namespace std::literals;
 #include "Containers/Ringbuffer.hpp"
 
 #include "Crypto/Checksums.hpp"
+#include "Crypto/HWID.hpp"
 #include "Crypto/OpenSSLWrapper.hpp"
 #include "Crypto/qDSA.hpp"
 #include "Crypto/SHA.hpp"
@@ -262,28 +263,20 @@ using namespace std::literals;
     #endif
 
     // Simple PRNG to avoid OS dependencies.
-    namespace RNG
+    struct RNG
     {
         // Xoroshiro128+
-        template <typename T = uint64_t> T Next()
+        inline uint64_t Next()
         {
-            static uint64_t Table[2]{ __rdtsc(), ~(__rdtsc()) };
+            static uint64_t Table[2]{ __rdtsc(), Hash::WW64(__rdtsc()) };
             const uint64_t Result = Table[0] + Table[1];
             const uint64_t S1 = Table[0] ^ Table[1];
 
             Table[0] = std::rotl(Table[0], 24) ^ S1 ^ (S1 << 16);
             Table[1] = std::rotl(S1, 37);
 
-            if constexpr (std::is_same_v<T, bool>) return Result & 1;
-            if constexpr (sizeof(T) == sizeof(uint64_t)) return std::bit_cast<T>(Result);
-            else
-            {
-                T Temp{};
-                std::memcpy(&Temp, &Result, std::min(sizeof(T), sizeof(uint64_t)));
-
-                return Temp;
-            }
+            return Result;
         }
-    }
+    };
 
 #pragma endregion
