@@ -97,9 +97,9 @@ namespace Backend::Config
     void Load();
 
     // Helper to set the publickey.
-    void PK_byCredential(std::u8string_view A, std::u8string_view B);
-    void PK_byHWID();
-    void PK_Random();
+    void setPublickey(std::u8string_view CredentialA, std::u8string_view CredentialB);
+    void setPublickey_HWID();
+    void setPublickey_RNG();
 }
 
 // User and plugin interaction with the backend.

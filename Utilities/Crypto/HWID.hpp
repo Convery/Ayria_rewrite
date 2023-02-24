@@ -8,8 +8,6 @@
 
 #pragma once
 #include <Utilities/Utilities.hpp>
-#include <winioctl.h>
-#include <ntddscsi.h>
 
 namespace HWID
 {
@@ -382,8 +380,8 @@ namespace HWID
         Diskinfo_t Result{};
 
         // Try everything until something works.
-        if (!Result.Full()) Legacy_NVME(Handle, Result);
         if (!Result.Full()) Modern_NVME(Handle, Result);
+        if (!Result.Full()) Legacy_NVME(Handle, Result);
         if (!Result.Full()) ATA(Handle, Result);
         if (!Result.Full()) SCSI(Handle, Result);
 

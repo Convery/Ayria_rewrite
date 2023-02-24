@@ -48,6 +48,8 @@
 #if defined(_WIN32)
 #include <intrin.h>
 #include <Windows.h>
+#include <winioctl.h>
+#include <ntddscsi.h>
 #else
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -263,7 +265,7 @@ using namespace std::literals;
     #endif
 
     // Simple PRNG to avoid OS dependencies.
-    struct RNG
+    namespace RNG
     {
         // Xoroshiro128+
         inline uint64_t Next()

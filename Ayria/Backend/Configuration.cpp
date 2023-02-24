@@ -5,6 +5,10 @@
 */
 
 #include <Ayria.hpp>
+#if __has_include(<tbs.h>)
+#include <tbs.h>
+#define HAS_TMP
+#endif
 
 namespace Backend::Config
 {
@@ -41,11 +45,11 @@ namespace Backend::Config
         // Select a source for crypto..
         if (std::strstr(GetCommandLineA(), "--randID"))
         {
-            PK_Random();
+            setPublickey_RNG();
         }
         else
         {
-            PK_byHWID();
+            setPublickey_HWID();
         }
 
         // Notify the user about the current settings.
@@ -59,248 +63,11 @@ namespace Backend::Config
         if (Config.empty()) Saveconfig();
     }
 
-    // Just two random sources for somewhat static data.
-    inline cmp::Array_t<uint8_t, 32> bySMBIOS()
-    {
-        uint8_t Version_major{};
-        std::u8string_view Table;
-
-        #if defined (_WIN32)
-        const auto Size = GetSystemFirmwareTable('RSMB', 0, NULL, 0);
-        const auto Buffer = std::make_unique<char8_t[]>(Size);
-        GetSystemFirmwareTable('RSMB', 0, Buffer.get(), Size);
-
-        Version_major = *(uint8_t *)(Buffer.get() + 1);
-        const auto Tablelength = *(uint32_t *)(Buffer.get() + 4);
-        Table = std::u8string_view(Buffer.get() + 8, Tablelength);
-
-        #else // Linux assumed.
-        const auto File = FS::Readfile<char8_t>("/sys/firmware/dmi/tables/smbios_entry_point");
-
-        // SMBIOS
-        if (*(uint32_t *)File.data() == 0x5F534D5F)
-        {
-            Version_major = File[6];
-
-            const auto Offset = *(uint32_t *)(File.data() + 0x18);
-            const auto Tablelength = *(uint32_t *)(File.data() + 0x16);
-            Table = std::u8string_view(File.data() + Offset, Tablelength);
-        }
-
-        // SMBIOS3
-        if (*(uint32_t *)File.data() == 0x5F534D33)
-        {
-            Version_major = File[7];
-
-            const auto Offset = *(uint64_t *)(File.data() + 0x10);
-            const auto Tablelength = *(uint32_t *)(File.data() + 0x0C);
-            Table = std::u8string_view(File.data() + Offset, Tablelength);
-        }
-        #endif
-
-        // Sometimes 2.x is reported as "default" AKA 0.
-        if (Version_major == 0 || Version_major >= 2)
-        {
-            std::vector<std::string> Serials{};
-
-            while (!Table.empty())
-            {
-                // Helper to skip trailing strings.
-                const auto Structsize = [](const char8_t *Start) -> size_t
-                {
-                    auto End = Start;
-                    End += Start[1];
-
-                    if (!*End) End++;
-                    while (*(End++)) while (*(End++)) {};
-                    return End - Start;
-                } (Table.data());
-
-                auto Entry = Table.substr(0, Structsize);
-                const auto Headerlength = Entry[1];
-                const auto Type = Entry[0];
-
-                // Sometimes messed up if using modded BIOS, i.e. 02000300040005000006000700080009
-                if (Type == 1)
-                {
-                    std::string Serial; Serial.reserve(16);
-
-                    for (size_t i = 0; i < 16; ++i) Serial.append(std::format("{:02X}", (uint8_t)Entry[8 + i]));
-
-                    Serials.push_back(Serial);
-                }
-
-                // Sometimes not actually filled..
-                if (Type == 2)
-                {
-                    const auto Stringindex = Entry[0x07];
-                    Entry.remove_prefix(Headerlength);
-
-                    for (uint8_t i = 1; i < Stringindex; ++i)
-                        Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
-
-                    Serials.push_back((char *)Entry.data());
-                }
-
-                // Only relevant for laptops.
-                if (Type == 3)
-                {
-                    const auto Stringindex = Entry[0x06];
-                    Entry.remove_prefix(Headerlength);
-
-                    for (uint8_t i = 1; i < Stringindex; ++i)
-                        Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
-
-                    Serials.push_back((char *)Entry.data());
-                }
-
-                // Not as unique as we want..
-                if (Type == 4)
-                {
-                    const auto Serial = std::format("{}", *(uint64_t *)&Entry[8]);
-                    Serials.push_back(Serial);
-                }
-
-                // Some laptops do not have a tag.
-                if (Type == 17)
-                {
-                    const auto Stringindex = Entry[0x18];
-                    Entry.remove_prefix(Headerlength);
-
-                    for (uint8_t i = 1; i < Stringindex; ++i)
-                        Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
-
-                    Serials.push_back((char *)Entry.data());
-                }
-                Table.remove_prefix(Structsize);
-            }
-
-            // Filter out bad OEM strings.
-            auto Baseview = Serials
-                | std::views::transform([](std::string &String) { for (auto &Char : String) Char = std::toupper(Char); return String; })
-                | std::views::filter([](const std::string &String) -> bool
-                {
-                    const std::vector<std::string> Badstrings = { "NONE", "FILLED", "OEM", "O.E.M.", "00020003000400050006000700080009", "SERNUM" };
-
-                    if (String.empty()) return false;
-                    return std::ranges::none_of(Badstrings, [&](const auto &Item) { return std::strstr(String.c_str(), Item.c_str()); });
-                });
-
-            // C++ does not have ranges::actions yet.
-            auto Unique = std::vector(Baseview.begin(), Baseview.end()); std::ranges::sort(Unique);
-            const auto [First, Last] = std::ranges::unique(Unique);
-            Unique.erase(First, Last);
-
-            // Limit ourselves to 3 items in-case of changes.
-            auto View = Unique | std::views::take(3);
-
-            // In-case we want to verify something.
-            if constexpr (Build::isDebug)
-            {
-                for (const auto &Item : View)
-                    Infoprint(va("Serial: %s", Item));
-            }
-
-            // Mix the serials so that the order doesn't matter.
-            size_t Longest = 0;
-            for (const auto &Item : View)
-                Longest = std::max(Longest, Item.size());
-
-            const auto Mixbuffer = (uint8_t *)alloca(Longest);
-            std::memset(Mixbuffer, 0, Longest);
-
-            for (const auto &Item : View)
-                for (size_t i = 0; i < Item.size(); ++i)
-                    Mixbuffer[i] ^= Item[i];
-
-            return Hash::SHA256(std::span(Mixbuffer, Longest));
-        }
-
-        return {};
-    }
-    inline cmp::Array_t<uint8_t, 32> byDisk()
-    {
-        constexpr auto getNVME = []() -> std::string
-        {
-            std::array<uint32_t, 1036> Query = { 49, 0, 3, 1, 1, 0, 40, 4096 };
-
-            const auto Handle = CreateFileW(L"\\\\.\\PhysicalDrive0", GENERIC_READ | GENERIC_WRITE,
-                                                                      FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                                                      NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-
-            if (Handle == INVALID_HANDLE_VALUE) Warningprint("getNVME requires admin.");
-
-            if (!DeviceIoControl(Handle, 0x2D1400, &Query, sizeof(Query), &Query, sizeof(Query), NULL, NULL))
-            {
-                CloseHandle(Handle);
-                return {};
-            }
-            else
-            {
-                // Some manufacturers don't care about endian..
-                const auto Buffer = std::span((char *)&Query[13], 20);
-                const auto Spaces = std::ranges::count(Buffer, ' ');
-                if (Buffer[Buffer.size() - Spaces - 1] == ' ')
-                {
-                    for (uint8_t i = 0; i < 20; i += 2)
-                    {
-                        std::swap(Buffer[i], Buffer[i + 1]);
-                    }
-                }
-
-                CloseHandle(Handle);
-                return std::string((char *)&Query[13], 20);
-            }
-        };
-        constexpr auto getSATA = []() -> std::string
-        {
-            std::array<uint8_t, 548> Query{ 0, 0, 0, 0, 0, 1, 1, 0, 0, 0xA0, 0xEC }; *(uint32_t *)&Query[0] = 512;
-
-            const auto Handle = CreateFileW(L"\\\\.\\PhysicalDrive0", GENERIC_READ | GENERIC_WRITE,
-                                                                      FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                                                      NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-
-            if (Handle == INVALID_HANDLE_VALUE) Warningprint("getSATA requires admin.");
-
-            if (!DeviceIoControl(Handle, 0x0007C088, &Query, sizeof(Query), &Query, sizeof(Query), NULL, NULL))
-            {
-                CloseHandle(Handle);
-                return {};
-            }
-            else
-            {
-                // Some manufacturers don't care about endian..
-                const auto Buffer = std::span((char *)&Query[36], 20);
-                const auto Spaces = std::ranges::count(Buffer, ' ');
-                if (Buffer[Buffer.size() - Spaces - 1] == ' ')
-                {
-                    for (uint8_t i = 0; i < 20; i += 2)
-                    {
-                        std::swap(Buffer[i], Buffer[i + 1]);
-                    }
-                }
-
-                CloseHandle(Handle);
-                return std::string((char *)&Query[36], 20);
-            }
-        };
-
-        const auto Serial1 = getNVME();
-        if constexpr (Build::isDebug) Infoprint(va("NVME: %s", Serial1));
-        if (!Serial1.empty()) return Hash::SHA256(Serial1);
-
-        const auto Serial2 = getSATA();
-        if constexpr (Build::isDebug) Infoprint(va("SATA: %s", Serial2));
-        if (!Serial2.empty()) return Hash::SHA256(Serial2);
-
-        return {};
-    }
-
     // Helper to set the publickey.
-    void PK_byCredential(std::u8string_view A, std::u8string_view B)
+    void setPublickey(std::u8string_view CredentialA, std::u8string_view CredentialB)
     {
         // TODO(tcn): Should probably have a more complex algo..
-        const auto Combined = Hash::SHA256(A) + Hash::SHA256(B);
+        const auto Combined = Hash::SHA256(CredentialA) + Hash::SHA256(CredentialB);
         std::array<uint8_t, 64> Temporary = Hash::SHA512(Combined);
 
         // Slow things down a bit.
@@ -310,33 +77,76 @@ namespace Backend::Config
         const auto Seed = Hash::SHA512(Hash::SHA256(Temporary) + Hash::SHA256(Combined));
         std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Seed);
     }
-    void PK_byHWID()
+    void setPublickey_HWID()
     {
-        // SMBIOS should always be available.
-        if (const auto BIOS = bySMBIOS(); !BIOS.empty()) [[likely]]
+        // Prefer BIOS as that rarely changes.
+        const auto BIOS = HWID::getSMBIOS();
+        if (!BIOS.Caseserial.empty())
         {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(BIOS);
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.Caseserial));
+            return;
+        }
+        if (!BIOS.MOBOSerial.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.MOBOSerial));
+            return;
+        }
+        if (!BIOS.UUID.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.UUID));
+            return;
+        }
+        if (!BIOS.RAMSerial.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.RAMSerial));
             return;
         }
 
-        // Requires administrator privileges.
-        if (const auto DISK = byDisk(); !DISK.empty())
+        // Diskinfo should be relatively stable.
+        const auto Diskinfo = HWID::getDiskinfo();
+        if (!Diskinfo.UUID.empty())
         {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(DISK);
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Diskinfo.UUID));
+            return;
+        }
+        if (!Diskinfo.Serial.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Diskinfo.Serial));
             return;
         }
 
-        Errorprint("Could not generate a fixed public-key, run as admin to save progress.");
-        PK_Random();
+        // Ask Windows for a TPM-/UEFI-stored ID.
+        std::array<uint8_t, 4096> Windows{};
+        if (const auto Length = GetFirmwareEnvironmentVariableW(L"OfflineUniqueIDRandomSeed", L"{eaec226f-c9a3-477a-a826-ddc716cdc0e3}", Windows.data(), (DWORD)Windows.size()))
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(std::span(Windows.data(), Length)));
+            return;
+        }
+
+        // Can't generate a local HWID, try a shared HWID.
+        const auto MAC = HWID::getRouterMAC();
+        if (!MAC.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(MAC));
+            return;
+        }
+
+        // Can't really do much else..
+        if (const auto Seed = FS::Readfile<uint8_t>("./Ayria/Cryptoseed"); !Seed.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Seed));
+        }
+        else
+        {
+            const std::array<uint64_t, 4> Source{ RNG::Next(), RNG::Next(), RNG::Next(), RNG::Next() };
+            FS::Writefile("./Ayria/Cryptoseed", Source);
+
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Source));
+        }
     }
-    void PK_Random()
+    void setPublickey_RNG()
     {
-        std::array<uint32_t, 8> Source;
-        rand_s(&Source[0]); rand_s(&Source[1]);
-        rand_s(&Source[2]); rand_s(&Source[3]);
-        rand_s(&Source[4]); rand_s(&Source[5]);
-        rand_s(&Source[6]); rand_s(&Source[7]);
-
+        const std::array<uint64_t, 4> Source{ RNG::Next(), RNG::Next(), RNG::Next(), RNG::Next() };
         std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Source));
     }
 }
