@@ -25,7 +25,7 @@ namespace Communication::Notifications
     void Unsubscribe(std::string_view Identifier, CCallback_t Handler);
     void Unsubscribe(std::string_view Identifier, CPPCallback_t Handler);
 
-    // RowID is the row in Syncpackets that triggered the notification.
+    // RowID is the row in Syncpacket that triggered the notification.
     void Publish(std::string_view Identifier, int64_t RowID, JSON::Value_t &&Payload);
     void Publish(std::string_view Identifier, int64_t RowID, std::string_view Payload);
 }

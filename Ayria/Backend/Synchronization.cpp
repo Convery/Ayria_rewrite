@@ -102,12 +102,12 @@ namespace Backend::Synchronization
             // Assume all services save a foreign-key reference to rowid's they want preserved..
             const auto Timestamp = (std::chrono::system_clock::now() - std::chrono::hours(24)).time_since_epoch();
 
-            // TODO(tcn): Find a way to "DELETE FROM Syncpackets WHERE (Timestamp < ?)" while ignoring errors.
+            // TODO(tcn): Find a way to "DELETE FROM Syncpacket WHERE (Timestamp < ?)" while ignoring errors.
             std::vector<int64_t> Rows{};
-            Query("SELECT rowid FROM Syncpackets WHERE (Timestamp < ?);", Timestamp.count()) >> Rows;
+            Query("SELECT rowid FROM Syncpacket WHERE (Timestamp < ?);", Timestamp.count()) >> Rows;
             for (const auto &Row : Rows)
             {
-                Query("DELETE FROM Syncpackets WHERE (rowid = ?);", Row).Execute();
+                Query("DELETE FROM Syncpacket WHERE (rowid = ?);", Row).Execute();
             }
         }
     }

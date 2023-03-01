@@ -31,7 +31,7 @@ namespace Communication::Notifications
         CPPNotifications[Hash::WW32(Identifier)].erase(Handler);
     }
 
-    // RowID is the row in Syncpackets that triggered the notification.
+    // RowID is the row in Syncpacket that triggered the notification.
     void Publish(std::string_view Identifier, int64_t RowID, JSON::Value_t &&Payload)
     {
         const auto ID = Hash::WW32(Identifier);

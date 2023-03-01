@@ -35,7 +35,7 @@ namespace Backend::Config
         Global.Configuration.enableIATHooking = Config.value<bool>("enableIATHooking");
         Global.Configuration.enableFileshare = Config.value<bool>("enableFileshare");
         Global.Configuration.noNetworking = Config.value<bool>("noNetworking");
-        Global.Configuration.pruneDB = Config.value<bool>("pruneDB");
+        Global.Configuration.pruneDB = Config.value<bool>("pruneDB", true);
         *Global.Username = Config.value(u8"Username", u8"AYRIA"s);
 
         // Select a source for crypto..
@@ -57,6 +57,10 @@ namespace Backend::Config
         // If there was no config, force-save one for the user instantly.
         (void)std::atexit([]() { if (Global.Configuration.modifiedConfig) Saveconfig(); });
         if (Config.empty()) Saveconfig();
+
+        // Might as well create a console if requested.
+        if (Global.Configuration.enableExternalconsole)
+            Frontend::CreateWinconsole().detach();
     }
 
     // Helper to set the publickey.

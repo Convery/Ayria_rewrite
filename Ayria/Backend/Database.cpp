@@ -75,7 +75,7 @@ namespace Backend::Database
     static std::shared_ptr<sqlite3> DBConnection{};
     static void InitializeDB()
     {
-        const sqlite::Database_t Database(DBConnection);
+        const sqlite::Database_t Database(DBConnection.get());
 
         // Database configuration.
         Database << "PRAGMA foreign_keys = ON;";
@@ -116,9 +116,9 @@ namespace Backend::Database
                 sqlite3_result_int64(context, (Hash::WW64(Text) << 32) | Hash::WW32(Text));
             };
 
-            sqlite3_create_function(Database.Connection.get(), "WW32", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, nullptr, Lambda32, nullptr, nullptr);
-            sqlite3_create_function(Database.Connection.get(), "WW64", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, nullptr, Lambda64, nullptr, nullptr);
-            sqlite3_create_function(Database.Connection.get(), "ShortID", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, nullptr, Lambda, nullptr, nullptr);
+            sqlite3_create_function(Database.Connection, "WW32", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, nullptr, Lambda32, nullptr, nullptr);
+            sqlite3_create_function(Database.Connection, "WW64", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, nullptr, Lambda64, nullptr, nullptr);
+            sqlite3_create_function(Database.Connection, "ShortID", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, nullptr, Lambda, nullptr, nullptr);
         }
 
         // All tables depend on the account as primary identifier.
@@ -130,22 +130,23 @@ namespace Backend::Database
             "ShortID INTEGER );";
         Database << Account;
     }
-    static void CleanupDB()
+    static void CleanupDB(sqlite3 *Connection)
     {
-        const sqlite::Database_t Database(DBConnection);
+        // DBConnection is invalidated at this point in time.
+        const sqlite::Database_t Database{ Connection };
 
         Database << "PRAGMA incremental_vacuum;";
         Database << "PRAGMA optimize;";
 
         // If this is an in-memory DB, try to flush to disk.
-        const auto Filename = sqlite3_db_filename(&*DBConnection, "main");
+        const auto Filename = sqlite3_db_filename(Connection, "main");
         if (!Filename || ""s == Filename)
         {
             sqlite3 *Ptr{};
             auto Result = sqlite3_open_v2("./Ayria/Client.sqlite", &Ptr, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
             if (Result == SQLITE_OK)
             {
-                const auto Backup = sqlite3_backup_init(Ptr, "main", &*DBConnection, "main");
+                const auto Backup = sqlite3_backup_init(Ptr, "main", Connection, "main");
                 if (Backup)
                 {
                     (void)sqlite3_backup_step(Backup, -1);
@@ -159,6 +160,9 @@ namespace Backend::Database
                 Infoprint("Database could not be saved.");
             }
         }
+
+        // Close the database.
+        sqlite3_close_v2(Connection);
     }
 
     // Open the database for writing.
@@ -179,15 +183,14 @@ namespace Backend::Database
             // Track our changes to the DB.
             sqlite3_preupdate_hook(Ptr, Clientupdatehook, nullptr);
 
-            // Close the DB at exit to ensure everything's flushed.
-            DBConnection = std::shared_ptr<sqlite3>(Ptr, [](sqlite3 *Ptr) { sqlite3_close_v2(Ptr); });
+            // Cleanup the DB at exit to ensure everything's flushed.
+            DBConnection = std::shared_ptr<sqlite3>(Ptr, CleanupDB);
 
-            // Cleanup the DB on exit.
-            (void)std::atexit(CleanupDB);
+            // Configure the basics.
             InitializeDB();
         }
 
-        return sqlite::Database_t(DBConnection);
+        return sqlite::Database_t(DBConnection.get());
     }
 
     // Poll for updates every 50ms.
