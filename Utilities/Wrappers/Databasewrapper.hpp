@@ -357,7 +357,7 @@ namespace sqlite
         void Execute() noexcept { Extractmultiple([]() {}); sqlite3_reset(Statement.get()); }
         void Reset() const noexcept { sqlite3_reset(Statement.get()); }
 
-        Statement_t(const std::shared_ptr<sqlite3> &Connection, std::string_view SQL) noexcept
+        Statement_t(sqlite3 *Connection, std::string_view SQL) noexcept
         {
             const char *Remaining{};
             sqlite3_stmt *Temp{};
@@ -367,10 +367,10 @@ namespace sqlite
             Argcount = std::ranges::count(SQL, '?');
 
             // Prepare the statement.
-            const auto Result = sqlite3_prepare_v2(Connection.get(), SQL.data(), int(SQL.size()), &Temp, &Remaining);
+            const auto Result = sqlite3_prepare_v2(Connection, SQL.data(), int(SQL.size()), &Temp, &Remaining);
             if (Result != SQLITE_OK) [[unlikely]]
             {
-                const auto Error = sqlite3_errmsg(Connection.get());
+                const auto Error = sqlite3_errmsg(Connection);
                 Errorprint(Error);
                 assert(false);
             }
@@ -394,7 +394,7 @@ namespace sqlite
     // Holds the connection and creates the prepared statement(s).
     struct Database_t
     {
-        std::shared_ptr<sqlite3> Connection;
+        sqlite3 *Connection;
 
         Statement_t operator<<(std::string_view SQL) const noexcept
         {
