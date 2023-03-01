@@ -103,6 +103,7 @@ namespace Backend::Backgroundtasks
             if (getSingleton().doTerminate) [[unlikely]]
             {
                 Infoprint("App termination requested by the user.");
+                Frontend::Winconsole::isActive.clear();
                 std::terminate();
             }
 
