@@ -8,6 +8,7 @@
 
 #pragma once
 #include <Utilities/Utilities.hpp>
+#include "SHA.hpp"
 
 namespace HWID
 {
@@ -113,9 +114,13 @@ namespace HWID
                         Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
 
                     const std::string Current((char *)Entry.data());
-                    Result.RAMSerial.resize(std::max(Result.RAMSerial.size(), Current.size()));
-                    for (size_t i = 0; i < Current.size(); ++i)
-                        Result.RAMSerial[i] ^= Current[i];
+                    const auto P1 = Hash::SHA256(Result.RAMSerial);
+                    auto P2 = Hash::SHA256(Current);
+
+                    for (uint8_t i = 0; i < P1.size(); ++i)
+                        P2[i] ^= P1[i];
+
+                    Result.RAMSerial = P2;
                 }
 
                 // Skip to next entry.
@@ -138,7 +143,6 @@ namespace HWID
             Infoprint(va("RAMSerial: %s", Encoding::toHexstringU(Result.RAMSerial).c_str()));
         }
 
-        Result.RAMSerial = Encoding::toHexstringU(Result.RAMSerial);
         return Result;
     }
 
@@ -219,10 +223,10 @@ namespace HWID
 
         // Find the best interface.
         std::array<uint64_t, 4> LUID{ 0x0101A8C0ULL << 32 };
-        const auto Interface = GetParameter.template operator()<4>(NPI_MS_IPV4_MODULEID.data(), 0, LUID.data(), 32, 88);
+        const auto Interface = GetParameter.operator()<4>(NPI_MS_IPV4_MODULEID.data(), 0, LUID.data(), 32, 88);
 
         // Resolve to LUID.
-        const auto Resolved = GetParameter.template operator()<8>(NPI_MS_NDIS_MODULEID.data(), 2, &Interface, 4, 0);
+        const auto Resolved = GetParameter.operator()<8>(NPI_MS_NDIS_MODULEID.data(), 2, &Interface, 4, 0);
         LUID = { std::bit_cast<uint64_t>(Resolved), std::bit_cast<uint64_t>(Resolved), 0x0101A8C0};
 
         // Query for fun data..
@@ -278,72 +282,15 @@ namespace HWID
                 Result.Serial = std::string((char *)&Serial[12 + 1]);
             }
         };
-        const auto ATA = [](HANDLE Devicehandle, Diskinfo_t &Result)
+        const auto SMART = [](HANDLE Devicehandle, Diskinfo_t &Result)
         {
-            // Connection type.
-            const auto ATA = [](HANDLE Devicehandle, std::array<uint8_t, 512> *Result)
+            std::array<uint8_t, 548> Query{ 0, 02, 0, 0, 0, 1, 1, 0, 0, 0xA0, 0xEC };
+
+            if (DeviceIoControl(Devicehandle, 0x0007C088, &Query, sizeof(Query), &Query, sizeof(Query), NULL, NULL))
             {
-                std::array<uint8_t, sizeof(ATA_PASS_THROUGH_EX) + 4 + 512> Buffer{};
-                *(ATA_PASS_THROUGH_EX *)&Buffer[0] = ATA_PASS_THROUGH_EX{sizeof(ATA_PASS_THROUGH_EX), ATA_FLAGS_DATA_IN, 0, 0, 0, 0, 512, 60, 0, sizeof(ATA_PASS_THROUGH_EX) + 4 };
-                Buffer[sizeof(ATA_PASS_THROUGH_EX) + 4] = 0xCF;
-
-                if (DeviceIoControl(Devicehandle, 0x4D02C, Buffer.data(), (DWORD)Buffer.size(), Buffer.data(), (DWORD)Buffer.size(), NULL, NULL))
-                {
-                    std::memcpy(Result->data(), &Buffer[sizeof(ATA_PASS_THROUGH_EX) + 4], 512);
-                    return true;
-                }
-
-                return false;
-            };
-            const auto IDE = [](HANDLE Devicehandle, const IDEREGS &Registers, std::array<uint8_t, 512> *Result)
-            {
-                std::array<uint8_t, 12 + 512> Buffer{};
-                *(IDEREGS *)&Buffer[0] = Registers;
-                *(ULONG *)&Buffer[8] = 512;
-                *(BYTE *)&Buffer[12] = 0xCF;
-
-                if (DeviceIoControl(Devicehandle, 0x04D028, Buffer.data(), (DWORD)Buffer.size(), Buffer.data(), (DWORD)Buffer.size(), NULL, NULL))
-                {
-                    std::memcpy(Result->data(), &Buffer[12], 512);
-                    return true;
-                }
-
-                return false;
-            };
-            const auto SCSI_miniport = [](HANDLE Devicehandle, const IDEREGS &Registers, std::array<uint8_t, 512> *Result)
-            {
-                std::array<uint8_t, sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDINPARAMS) + 512> Buffer{};
-                *(SRB_IO_CONTROL *)&Buffer[0] = SRB_IO_CONTROL{ sizeof(SRB_IO_CONTROL), { 'S', 'C', 'S', 'I', 'D', 'I', 'S', 'K' }, 60, 0x1B0501, 0, sizeof(SENDCMDINPARAMS) + 511 };
-                *(SENDCMDINPARAMS *)&Buffer[sizeof(SRB_IO_CONTROL)] = SENDCMDINPARAMS{ 512, Registers };
-
-                if (DeviceIoControl(Devicehandle, 0x4D008, Buffer.data(), (DWORD)Buffer.size(), Buffer.data(), (DWORD)Buffer.size(), NULL, NULL))
-                {
-                    std::memcpy(Result->data(), ((SENDCMDOUTPARAMS *)&Buffer[sizeof(SRB_IO_CONTROL)])->bBuffer, std::min(DWORD(512), ((SENDCMDOUTPARAMS *)&Buffer[sizeof(SRB_IO_CONTROL)])->cBufferSize));
-                    return true;
-                }
-
-                return false;
-            };
-
-            constexpr IDEREGS PIDENTIFY{ 0, 1, 0, 0, 0, 0, 0xA1 };
-            constexpr IDEREGS IDENTIFY{ 0, 1, 0, 0, 0, 0, 0xEC };
-            std::array<uint8_t, 512> Diskinfo{};
-
-            if (SCSI_miniport(Devicehandle, IDENTIFY, &Diskinfo) ||
-                IDE(Devicehandle, PIDENTIFY, &Diskinfo) ||
-                IDE(Devicehandle, IDENTIFY, &Diskinfo) ||
-                ATA(Devicehandle, &Diskinfo))
-            {
-                Diskinfo[40] = 0;
-                for (int i = 0; i < 10; ++i) *(uint16_t *)&Diskinfo[20 + i * 2] = cmp::fromBig(*(uint16_t *)&Diskinfo[20 + i * 2]);
-                Result.Serial = std::string((char *)&Diskinfo[20]);
-
-                uint16_t *Words = (uint16_t *)&Diskinfo[174];
-                if ((Words[0] & 0xC100) == 0x4100)
-                {
-                    for (int i = 0; i < 4; ++i) Words[21 + i] = cmp::fromBig(Words[21 + i]);
-                    Result.UUID = Encoding::toHexstringU(Blob_t((uint8_t *)&Words[21], 8));
-                }
+                const auto Buffer = std::span((char *)&Query[36], 20);
+                for (int i = 0; i < 10; ++i) *(uint16_t *)&Buffer[i * 2] = cmp::fromBig(*(uint16_t *)&Buffer[i * 2]);
+                Result.Serial = std::string(Buffer.begin(), Buffer.end());
             }
         };
         const auto SCSI = [](HANDLE Devicehandle, Diskinfo_t &Result)
@@ -372,6 +319,74 @@ namespace HWID
                 Result.Serial = std::string((char *)&Buffer[4], Length);
             }
         };
+        const auto ATA = [](HANDLE Devicehandle, Diskinfo_t &Result)
+        {
+            // Connection type.
+            const auto ATA = [](HANDLE Devicehandle, std::array<uint8_t, 512> *Result)
+            {
+                std::array<uint8_t, sizeof(ATA_PASS_THROUGH_EX) + 4 + 512> Buffer{};
+                *(ATA_PASS_THROUGH_EX *)&Buffer[0] = ATA_PASS_THROUGH_EX{sizeof(ATA_PASS_THROUGH_EX), ATA_FLAGS_DATA_IN, 0, 0, 0, 0, 512, 60, 0, sizeof(ATA_PASS_THROUGH_EX) + 4 };
+                Buffer[sizeof(ATA_PASS_THROUGH_EX) + 4] = 0xCF;
+
+                if (DeviceIoControl(Devicehandle, 0x04D02C, Buffer.data(), (DWORD)Buffer.size(), Buffer.data(), (DWORD)Buffer.size(), NULL, NULL))
+                {
+                    std::memcpy(Result->data(), &Buffer[sizeof(ATA_PASS_THROUGH_EX) + 4], 512);
+                    return true;
+                }
+
+                return false;
+            };
+            const auto IDE = [](HANDLE Devicehandle, const IDEREGS &Registers, std::array<uint8_t, 512> *Result)
+            {
+                std::array<uint8_t, 12 + 512> Buffer{};
+                *(IDEREGS *)&Buffer[0] = Registers;
+                *(ULONG *)&Buffer[8] = 512;
+                *(BYTE *)&Buffer[12] = 0xCF;
+
+                if (DeviceIoControl(Devicehandle, 0x04D028, Buffer.data(), (DWORD)Buffer.size(), Buffer.data(), (DWORD)Buffer.size(), NULL, NULL))
+                {
+                    std::memcpy(Result->data(), &Buffer[12], 512);
+                    return true;
+                }
+
+                return false;
+            };
+            const auto SCSI_miniport = [](HANDLE Devicehandle, const IDEREGS &Registers, std::array<uint8_t, 512> *Result)
+            {
+                std::array<uint8_t, sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDINPARAMS) + 512> Buffer{};
+                *(SRB_IO_CONTROL *)&Buffer[0] = SRB_IO_CONTROL{ sizeof(SRB_IO_CONTROL), { 'S', 'C', 'S', 'I', 'D', 'I', 'S', 'K' }, 60, 0x1B0501, 0, sizeof(SENDCMDINPARAMS) + 511 };
+                *(SENDCMDINPARAMS *)&Buffer[sizeof(SRB_IO_CONTROL)] = SENDCMDINPARAMS{ 512, Registers };
+
+                if (DeviceIoControl(Devicehandle, 0x04D008, Buffer.data(), (DWORD)Buffer.size(), Buffer.data(), (DWORD)Buffer.size(), NULL, NULL))
+                {
+                    std::memcpy(Result->data(), ((SENDCMDOUTPARAMS *)&Buffer[sizeof(SRB_IO_CONTROL)])->bBuffer, std::min(DWORD(512), ((SENDCMDOUTPARAMS *)&Buffer[sizeof(SRB_IO_CONTROL)])->cBufferSize));
+                    return true;
+                }
+
+                return false;
+            };
+
+            constexpr IDEREGS PIDENTIFY{ 0, 1, 0, 0, 0, 0, 0xA1 };
+            constexpr IDEREGS IDENTIFY{ 0, 1, 0, 0, 0, 0, 0xEC };
+            std::array<uint8_t, 512> Diskinfo{};
+
+            if (SCSI_miniport(Devicehandle, IDENTIFY, &Diskinfo) ||
+                IDE(Devicehandle, PIDENTIFY, &Diskinfo) ||
+                IDE(Devicehandle, IDENTIFY, &Diskinfo) ||
+                ATA(Devicehandle, &Diskinfo))
+            {
+                Diskinfo[40] = 0;
+                for (int i = 0; i < 10; ++i) *(uint16_t *)&Diskinfo[20 + i * 2] = cmp::fromBig(*(uint16_t *)&Diskinfo[20 + i * 2]);
+                Result.Serial = std::string((char *)&Diskinfo[20]);
+
+                const auto Words = (uint16_t *)&Diskinfo[174];
+                if ((Words[0] & 0xC100) == 0x4100)
+                {
+                    for (int i = 0; i < 4; ++i) Words[21 + i] = cmp::fromBig(Words[21 + i]);
+                    Result.UUID = Encoding::toHexstringU(Blob_t((uint8_t *)&Words[21], 8));
+                }
+            }
+        };
 
         auto Handle = CreateFileW(L"\\\\.\\C:", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
         if (Handle == INVALID_HANDLE_VALUE) Handle = CreateFileW(L"\\\\.\\C:", GENERIC_READ | GENERIC_WRITE, NULL, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
@@ -384,6 +399,7 @@ namespace HWID
         if (!Result.Full()) Legacy_NVME(Handle, Result);
         if (!Result.Full()) ATA(Handle, Result);
         if (!Result.Full()) SCSI(Handle, Result);
+        if (!Result.Full()) SMART(Handle, Result);
 
         Debugprint(va("Diskinfo: %s - %s", Result.UUID.c_str(), Result.Serial.c_str()));
         CloseHandle(Handle);

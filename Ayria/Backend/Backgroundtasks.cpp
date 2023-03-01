@@ -53,7 +53,6 @@ namespace Backend::Backgroundtasks
     void Initialize()
     {
         auto &Singleton = getSingleton();
-        std::scoped_lock Guard(Singleton.Threadsafe);
 
         // We can not ensure ordering of the tasks.
         for (const auto &Task : Singleton.Initialtasks) Task();
@@ -104,7 +103,7 @@ namespace Backend::Backgroundtasks
             if (getSingleton().doTerminate) [[unlikely]]
             {
                 Infoprint("App termination requested by the user.");
-                return 0;
+                std::terminate();
             }
 
             // Most tasks run with periods in seconds.

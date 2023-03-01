@@ -30,15 +30,11 @@ namespace sqlite
     #pragma warning(push)
     #pragma warning(disable: 4702)
 
-    // Helpers for type deduction.
-    template <class, template <class...> class> inline constexpr bool isDerived = false;
-    template <template <class...> class T, class... Args> inline constexpr bool isDerived<T<Args...>, T> = true;
-
     template <typename T> concept Integer_t = std::is_integral_v<T>;
     template <typename T> concept Float_t = std::is_floating_point_v<T>;
-    template <typename T> concept Optional_t = isDerived<T, std::optional>;
-    template <typename T> concept String_t = isDerived<T, std::basic_string> || isDerived<T, std::basic_string_view>;
-    template <typename T> concept Blob_t = isDerived<T, std::vector> || isDerived<T, std::set> || isDerived<T, std::unordered_set>;
+    template <typename T> concept Optional_t = cmp::isDerived<T, std::optional>;
+    template <typename T> concept String_t = cmp::isDerived<T, std::basic_string> || cmp::isDerived<T, std::basic_string_view>;
+    template <typename T> concept Blob_t = cmp::isDerived<T, std::vector> || cmp::isDerived<T, std::set> || cmp::isDerived<T, std::unordered_set>;
     template <typename T> concept Value_t = Integer_t<T> || String_t<T> || Optional_t<T> || Blob_t<T> || Float_t<T> || std::is_same_v<T, nullptr_t> ;
 
     // Helper to get the arguments to a function.
@@ -59,7 +55,7 @@ namespace sqlite
     template <Value_t T> T getResult(sqlite3_stmt *Statement, int Index)
     {
         // The caller needs to assume ownership of the data, so views are illegal.
-        static_assert(!isDerived<T, std::basic_string_view>, "Binding to a view is illegal.");
+        static_assert(!cmp::isDerived<T, std::basic_string_view>, "Binding to a view is illegal.");
 
         // NULL data = default initialization rather than an error..
         const auto Type = sqlite3_column_type(Statement, Index);
@@ -81,7 +77,7 @@ namespace sqlite
                 break;
 
             case SQLITE_TEXT:
-                if constexpr (isDerived<T, std::basic_string>)
+                if constexpr (cmp::isDerived<T, std::basic_string>)
                 {
                     // NOTE(tcn): SQLite-strings are null-terminated, but requesting the size is faster than a scan.
                     const auto Buffer = (const char8_t *)sqlite3_column_text(Statement, Index);
@@ -99,7 +95,7 @@ namespace sqlite
                 if constexpr (Blob_t<T>)
                 {
                     // Not going to bother with strings as there's no universal way to handle them.
-                    static_assert(!isDerived<typename T::value_type, std::basic_string>, "A BLOB of strings is not supported.");
+                    static_assert(!cmp::isDerived<typename T::value_type, std::basic_string>, "A BLOB of strings is not supported.");
 
                     const auto Size = sqlite3_column_bytes(Statement, Index);
                     const auto Elements = Size / sizeof(typename T::value_type);
@@ -133,7 +129,7 @@ namespace sqlite
             if constexpr (Blob_t<T>)
             {
                 // A BLOB needs to be contigious memory.
-                if constexpr (isDerived<T, std::set> || isDerived<T, std::unordered_set>)
+                if constexpr (cmp::isDerived<T, std::set> || cmp::isDerived<T, std::unordered_set>)
                 {
                     const std::vector<typename T::value_type> Temp(Value.begin(), Value.end());
                     return sqlite3_bind_blob(Statement, Index, Temp.data(), int(Temp.size() * sizeof(typename T::value_type)), SQLITE_TRANSIENT);
@@ -143,7 +139,7 @@ namespace sqlite
                     return sqlite3_bind_blob(Statement, Index, Value.data(), int(Value.size() * sizeof(typename T::value_type)), SQLITE_TRANSIENT);
                 }
             }
-            if constexpr (std::is_same_v<T, ::Blob_t>)
+            if constexpr (std::is_same_v<T, ::Blob_t> || std::is_same_v<T, ::Blob_view_t>)
             {
                 return sqlite3_bind_blob(Statement, Index, Value.data(), int(Value.size()), SQLITE_TRANSIENT);
             }
@@ -374,7 +370,7 @@ namespace sqlite
             const auto Result = sqlite3_prepare_v2(Connection.get(), SQL.data(), int(SQL.size()), &Temp, &Remaining);
             if (Result != SQLITE_OK) [[unlikely]]
             {
-                const auto Error = sqlite3_errmsg(sqlite3_db_handle(Statement.get()));
+                const auto Error = sqlite3_errmsg(Connection.get());
                 Errorprint(Error);
                 assert(false);
             }

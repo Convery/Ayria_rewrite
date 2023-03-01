@@ -243,13 +243,13 @@ namespace JSON
         }
 
         // Helper for safer access to the storage.
-        template <typename T> requires(std::is_convertible_v<T, Value_t>) T value(const T &Defaultvalue) const
+        template <typename T> requires(std::is_convertible_v<Value_t, T>) T value() const
         {
             const auto Temp = Get<T>();
             if (Temp) return *Temp;
-            return Defaultvalue;
+            return T{};
         }
-        template <typename T = Value_t> requires(std::is_convertible_v<T, Value_t>) T value(const std::string &Key) const
+        template <typename T = Value_t> requires(std::is_convertible_v<Value_t, T>) T value(const std::string &Key) const
         {
             if (!contains(Key)) return {};
 
@@ -257,7 +257,7 @@ namespace JSON
             if (Temp) return *Temp;
             return {};
         }
-        template <typename T = Value_t> requires(std::is_convertible_v<T, Value_t>) T value(const std::u8string &Key) const
+        template <typename T = Value_t> requires(std::is_convertible_v<Value_t, T>) T value(const std::u8string &Key) const
         {
             if (!contains(Key)) return {};
 
@@ -265,7 +265,7 @@ namespace JSON
             if (Temp) return *Temp;
             return {};
         }
-        template <typename T> requires(std::is_convertible_v<T, Value_t>) T value(const std::string &Key, const T &Defaultvalue) const
+        template <typename T> requires(std::is_convertible_v<Value_t, T>) T value(const std::string &Key, const T &Defaultvalue) const
         {
             if (!contains(Key)) return Defaultvalue;
 
@@ -273,7 +273,7 @@ namespace JSON
             if (Temp) return *Temp;
             return Defaultvalue;
         }
-        template <typename T> requires(std::is_convertible_v<T, Value_t>) T value(const std::u8string &Key, const T &Defaultvalue) const
+        template <typename T> requires(std::is_convertible_v<Value_t, T>) T value(const std::u8string &Key, const T &Defaultvalue) const
         {
             if (!contains(Key)) return Defaultvalue;
 
@@ -316,7 +316,7 @@ namespace JSON
                 std::string Result{ "{" };
                 for (const auto Object = *Get<Object_t>(); const auto & [Key, Value] : Object)
                 {
-                    Result.append(va("\"%*s\":", Key.size(), Key.data()));
+                    Result.append(va("\"%.*s\":", Key.size(), Key.data()));
                     Result.append(Value.Dump());
                     Result.append(",");
                 }
@@ -382,13 +382,13 @@ namespace JSON
         {
             if (Input[0] == 't' || Input[0] == 'T')
             {
-                Input.remove_prefix(sizeof("true"));
+                Input.remove_prefix(sizeof("true") - 1);
                 return true;
             }
 
             if (Input[0] == 'f' || Input[0] == 'F')
             {
-                Input.remove_prefix(sizeof("false"));
+                Input.remove_prefix(sizeof("false") - 1);
                 return false;
             }
 
@@ -530,13 +530,17 @@ namespace JSON
     }
     inline Value_t Parse(std::u8string_view JSONString)
     {
+        // We don't parse individual values here.
+        if (JSONString.empty()) return {};
+        assert(JSONString[0] == '{');
+
         // Malformed statement check. Missing brackets, null-chars messing up C-string parsing.
         const auto C1 = std::ranges::count(JSONString, '{') != std::ranges::count(JSONString, '}');
         const auto C2 = std::ranges::count(JSONString, '[') != std::ranges::count(JSONString, ']');
         const auto C3 = std::ranges::count(JSONString, '\0') > 1;
         if (C1 || C2 || C3) [[unlikely]]
         {
-            const auto VA = va("Trying to parse invalid JSON string, first chars: %*s", std::min(size_t(20), JSONString.size()), JSONString.data());
+            const auto VA = va("Trying to parse invalid JSON string, first chars: %.*s", std::min(size_t(20), JSONString.size()), JSONString.data());
             Errorprint(VA);
             assert(false);
             return {};

@@ -90,8 +90,6 @@ namespace Communication::Console
                                  });
         }
 
-        // Reverse the vector to simplify other code.
-        std::ranges::reverse(Result);
         return Result;
     }
 
@@ -138,7 +136,7 @@ namespace Communication::Console
         const auto Handlers = Findcommand(Tokens[0]);
         if (!Handlers)
         {
-            Errorprint(va("No command named: %*s", Tokens[0].size(), Tokens[0].data()));
+            Errorprint(va("No command named: %.*s", Tokens[0].size(), Tokens[0].data()));
             for (size_t i = 0; i < Size; ++i) delete[] Arguments[i];
             return;
         }
@@ -190,7 +188,7 @@ namespace Communication::Console
     // Access from the plugins.
     namespace Export
     {
-        extern "C" EXPORT_ATTR void __cdecl addConsolecommand(const char *Name, void(__cdecl *Callback)(int Argc, const char **Argv))
+        extern "C" EXPORT_ATTR void __cdecl addConsolecommand(const char *Name, void(__cdecl *Callback)(int argc, const char **argv))
         {
             if (!Name || !Callback) [[unlikely]] return;
             addCommand(Encoding::toUTF8(Name), Callback);

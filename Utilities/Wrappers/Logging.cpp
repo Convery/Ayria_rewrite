@@ -39,6 +39,7 @@ namespace Logging
         // Console does thread-safety.
         if (Console) [[likely]]
         {
+            //               void __cdecl addConsolemessage(const char *String, uint32_t ARGBColor)
             reinterpret_cast<void(__cdecl *)(const char *, unsigned int)>(Console)(Message.data(), 0);
         }
     }

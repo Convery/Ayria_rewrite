@@ -53,8 +53,6 @@ namespace Base58
 
             for (const auto &Item : Input)
             {
-                // Count leading zeros.
-                if (Item == T()) Leadingzeros++;
                 auto Local = static_cast<uint32_t>(Item);
 
                 for (size_t c = 0; c < Outputposition; c++)
@@ -72,8 +70,8 @@ namespace Base58
             }
 
             // Count leading zeros.
-            for (size_t i = 0; i < Leadingzeros; ++i)
-                Buffer[i] = uint8_t('1');
+            while (Input[Leadingzeros] == 0 && Leadingzeros < N)
+            { Buffer[Leadingzeros] = '1'; Leadingzeros++; }
 
             // Reverse emplace from the map.
             for (size_t i = 0; i < Outputposition; ++i)
@@ -91,8 +89,6 @@ namespace Base58
 
             for (const auto &Item : Input)
             {
-                // Count leading zeros.
-                if (Item == T()) Leadingzeros++;
                 auto Local = static_cast<uint32_t>(Item);
 
                 for (size_t c = 0; c < Outputposition; c++)
@@ -110,8 +106,8 @@ namespace Base58
             }
 
             // Count leading zeros.
-            for (size_t i = 0; i < Leadingzeros; ++i)
-                Buffer[i] = uint8_t('1');
+            while (Input[Leadingzeros] == 0 && Leadingzeros < N)
+            { Buffer[Leadingzeros] = '1'; Leadingzeros++; }
 
             // Reverse emplace from the map.
             Result.resize(Leadingzeros + Outputposition);
@@ -128,12 +124,9 @@ namespace Base58
         {
             std::array<uint8_t, Encodesize(N)> Buffer{};
             size_t Outputposition{ 1 };
-            size_t Leadingzeros{};
 
             for (const auto &Item : Input)
             {
-                // Count leading zeros.
-                if (Item == T('1')) Leadingzeros++;
                 auto Local = static_cast<uint32_t>(Internal::Reversetable[size_t(Item & uint8_t(0x7F))]);
 
                 for (size_t c = 0; c < Outputposition; c++)
@@ -150,8 +143,9 @@ namespace Base58
                 }
             }
 
-            for (size_t i = 0; i < Leadingzeros; ++i)
-                Buffer[Outputposition++] = uint8_t();
+            // Set leading zeros.
+            for (size_t i = 0; i < N && Input[i] == '1'; i++)
+                Buffer[Outputposition++] = 0;
 
             std::ranges::reverse(Buffer.begin(), Buffer.begin() + Outputposition);
             return cmp::resize_array<uint8_t, Encodesize(N), Decodesize(N)>(Buffer);
@@ -160,12 +154,9 @@ namespace Base58
         {
             std::basic_string<uint8_t> Buffer(Encodesize(Input.size()), uint8_t{});
             size_t Outputposition{ 1 };
-            size_t Leadingzeros{};
 
             for (const auto &Item : Input)
             {
-                // Count leading zeros.
-                if (Item == T('1')) Leadingzeros++;
                 auto Local = static_cast<uint32_t>(Internal::Reversetable[size_t(Item & uint8_t(0x7F))]);
 
                 for (size_t c = 0; c < Outputposition; c++)
@@ -182,8 +173,9 @@ namespace Base58
                 }
             }
 
-            for (size_t i = 0; i < Leadingzeros; ++i)
-                Buffer[i] = uint8_t();
+            // Set leading zeros.
+            for (size_t i = 0; i < N && Input[i] == '1'; i++)
+                Buffer[Outputposition++] = 0;
 
             std::ranges::reverse(Buffer.begin(), Buffer.begin() + Outputposition);
             Buffer.resize(Decodesize(Input.size()));

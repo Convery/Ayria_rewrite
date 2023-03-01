@@ -34,7 +34,7 @@ namespace Backend::Synchronization
     }
     void Storemessage(const qDSA::Signature_t &Signature, const qDSA::Publickey_t &Publickey, uint32_t Messagetype, int64_t Timestamp, const Bytebuffer_t &Payload)
     {
-        const auto PK = Base58::Encode(Publickey);
+        const std::u8string PK = Base58::Encode(Publickey);
 
         // Ensure that an account exists for this PK.
         const auto ShortID = (Hash::WW64(Publickey) << 32) | Hash::WW32(Publickey);
@@ -42,7 +42,7 @@ namespace Backend::Synchronization
 
         // Standard insert.
         auto PS = Query("INSERT INTO Syncpacket VALUES (?, ?, ?, ?, ?) RETURNING rowid;");
-        PS << PK << Base58::Encode(Signature);
+        PS << PK << (std::u8string)Base58::Encode(Signature);
         PS << Messagetype << Timestamp;
         PS << Base85::Encode(Payload.as_span());
 
@@ -55,7 +55,7 @@ namespace Backend::Synchronization
 
         // Update timestamps.
         int64_t First{}, Last{};
-        Query("SELECT (Firstseen, Lastseen) FROM Account WHERE Publickey = ?;", PK) >> std::tie(First, Last);
+        Query("SELECT Firstseen, Lastseen FROM Account WHERE Publickey = ?;", PK) >> std::tie(First, Last);
         Query("UPDATE Account SET Firstseen = ?, Lastseen = ? WHERE Publickey = ?;", std::min(First, Timestamp), std::max(Last, Timestamp), PK).Execute();
     }
 

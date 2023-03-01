@@ -38,7 +38,7 @@ namespace Communication::JSONAPI
         // Return a list of available endpoints if misspelled.
         if (!Requesthandlers.contains(Functionname)) [[unlikely]]
         {
-            static std::string Failurestring = va(R"({ "Error" : "No endpoint with name \"%*s\" available.", \n"Endpoints" : [ )",
+            static std::string Failurestring = va(R"({ "Error" : "No endpoint with name \"%.*s\" available.", \n"Endpoints" : [ )",
                                                   Functionname.size(), Functionname.data());
 
             for (const auto &Name : Requesthandlers | std::views::keys)

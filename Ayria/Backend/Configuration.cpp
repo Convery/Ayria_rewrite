@@ -5,10 +5,6 @@
 */
 
 #include <Ayria.hpp>
-#if __has_include(<tbs.h>)
-#include <tbs.h>
-#define HAS_TMP
-#endif
 
 namespace Backend::Config
 {
@@ -79,6 +75,19 @@ namespace Backend::Config
     }
     void setPublickey_HWID()
     {
+        // Diskinfo should be relatively stable.
+        const auto Diskinfo = HWID::getDiskinfo();
+        if (!Diskinfo.UUID.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Diskinfo.UUID));
+            return;
+        }
+        if (!Diskinfo.Serial.empty())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Diskinfo.Serial));
+            return;
+        }
+
         // Prefer BIOS as that rarely changes.
         const auto BIOS = HWID::getSMBIOS();
         if (!BIOS.Caseserial.empty())
@@ -99,19 +108,6 @@ namespace Backend::Config
         if (!BIOS.RAMSerial.empty())
         {
             std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.RAMSerial));
-            return;
-        }
-
-        // Diskinfo should be relatively stable.
-        const auto Diskinfo = HWID::getDiskinfo();
-        if (!Diskinfo.UUID.empty())
-        {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Diskinfo.UUID));
-            return;
-        }
-        if (!Diskinfo.Serial.empty())
-        {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(Diskinfo.Serial));
             return;
         }
 

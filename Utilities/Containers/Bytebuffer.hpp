@@ -614,12 +614,13 @@ struct Protobuffer_t : Bytebuffer_t
         // Little endian needed.
         Input = cmp::toLittle(Input);
 
-        while (Input && Size < 10)
+        for (; Size < 10; Size++)
         {
+            if (!Input) break;
+
             // MSB = continuation.
-            Buffer[Size] = (Input | 0x80) & 0xFF;
+            Buffer[Size] = (Input & 0x7F) | 0x80;
             Input >>= 7;
-            ++Size;
         }
 
         // Clear MSB.
@@ -650,17 +651,19 @@ struct Protobuffer_t : Bytebuffer_t
     {
         uint64_t Value{};
 
-        for (int i = 0; i < 64; i += 7)
+        for (uint8_t i = 0; i < 10; ++i)
         {
+            Value <<= 7;
+
             const auto Byte = Bytebuffer_t::Read<uint8_t>(false);
-            Value |= (Byte & 0x7F) << i;
+            Value |= (Byte & 0x7F);
 
             // No continuation bit.
-            if (!(Value & 0x80))
+            if (!(Byte & 0x80))
                 break;
         }
 
-        return Value;
+        return cmp::fromLittle(Value);
     }
     std::u8string DecodeSTRING()
     {
