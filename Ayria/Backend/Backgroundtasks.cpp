@@ -22,7 +22,7 @@ namespace Backend::Backgroundtasks
 
         std::vector<Callback_t> Initialtasks;
         std::atomic<bool> doTerminate;
-        Spinlock_t Threadsafe;
+        Defaultmutex Threadsafe;
     };
     static Singleton_t &getSingleton()
     {

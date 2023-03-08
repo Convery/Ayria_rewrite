@@ -129,6 +129,9 @@ namespace Backend
         Backgroundtasks::addPeriodictask(Callback, PeriodMS);
     }
 
+    // Trigger a callback from the background thread if *pSource != *pCompare.
+    void onMemorywrite(void *pSource, void *pCompare, uint8_t Size, void(__cdecl *pCallback)());
+
     // Evaluation of the prepared statement via >> operator or dtor.
     template <typename ...Args> [[nodiscard]] auto Query(std::string_view SQL, Args&&... va)
     {
