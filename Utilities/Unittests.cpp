@@ -7,6 +7,7 @@
 */
 
 #include <Utilities/Utilities.hpp>
+#include <numbers>
 
 int main()
 {
@@ -15,17 +16,12 @@ int main()
     // Utilities.hpp
     [[maybe_unused]] const auto Utilitiestest = []() -> bool
     {
-        // Zip a range with another.
-        std::vector a{ 1, 2, 3 }, b{ 4, 5, 6, 7, 8, 9 }, c{ 10, 11, 12 };
-        for (auto [A, B, C] : Zip(a, b, c)) { A = C; }
-        if (a != c) printf("BROKEN: Zip utility\n");
-
         // Enumeration.
-        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }, 1))
+        for (const auto &[Index, Item] : Enumerate({ 1, 2, 3 }, 1))
         {
             if (Index != Item) printf("BROKEN: Enum utility\n");
         }
-        for (const auto [Index, Item] : Enumerate({ 1, 2, 3 }))
+        for (const auto &[Index, Item] : Enumerate({ 1, 2, 3 }))
         {
             if (Index != (Item - 1)) printf("BROKEN: Enum utility\n");
         }
@@ -35,6 +31,10 @@ int main()
         for (const auto Int : Range(0, 6, 2)) Counter += Int;
         if (Counter != 6) printf("BROKEN: Range utility\n");
 
+        //                  = { 2, 3, 4 }
+        const auto Subrange = Slice({ 1, 2, 3, 4, 5 }, 1, 4);
+        if (Subrange[0] != 2 || Subrange[1] != 3 || Subrange[2] != 4)
+            printf("BROKEN: Slice utility\n");
 
         return true;
     }();
@@ -221,7 +221,7 @@ int main()
         constexpr auto V2 = u8"åäö" == Encoding::toUTF8("\\u00E5\\u00E4\\u00F6");
         constexpr auto V3 = "\\u00E5\\u00E4\\u00F6" == Encoding::toASCII(u8"åäö");
         constexpr auto V4 = "???" == Encoding::toASCII(Encoding::toUNICODE(u8"åäö"));
-        static_assert(V1 && V2 && V3 && V4, "BROKEN: UTF8 encoding (verify that the file is saved as UTF8)");
+        static_assert(V1 && V2 && V3 && V4, "BROKEN: UTF8 encoding (verify that the source-file is saved as UTF8)");
 
         // Runtime version.
         if (L"åäö" != Encoding::toUNICODE(u8"åäö")                  ||
@@ -229,7 +229,7 @@ int main()
            ("\\u00E5\\u00E4\\u00F6" != Encoding::toASCII(u8"åäö"))  ||
            ("???" != Encoding::toASCII(Encoding::toUNICODE(u8"åäö"))))
         {
-            printf("BROKEN: UTF8 encoding (verify that the file is saved as UTF8)\n");
+            printf("BROKEN: UTF8 encoding (verify that the source-file is saved as UTF8)\n");
         }
 
         return true;
@@ -238,7 +238,7 @@ int main()
     // Encoding/Stringsplit.hpp
     [[maybe_unused]] const auto Tokenizetest = []() -> bool
     {
-        // Without NULL tokens. (..., false).size()
+        // Without NULL tokens. (..., false)
         static_assert(4 == Stringsplit("ab,c,,,,,d,e", ',').size(), "BROKEN: StringsplitA");
         static_assert(4 == Stringsplit(L"ab,c,,,,,d,e", L',').size(), "BROKEN: StringsplitW");
         static_assert(4 == Stringsplit(u8"ab,c,,,,,d,e", u8',').size(), "BROKEN: StringsplitU8");
@@ -303,6 +303,41 @@ int main()
         if (2 != Buffer.Read<uint8_t>()) printf("BROKEN: Bytebuffer reading\n");
         if (3 != Buffer.Read<uint8_t>(false)) printf("BROKEN: Bytebuffer reading\n");
         if ("Hello"s != Buffer.Read<std::string>()) printf("BROKEN: Bytebuffer reading\n");
+
+        return true;
+    }();
+
+    // Compiletime math to a reasonable accuracy of +- 0.01%.
+    [[maybe_unused]] const auto Mathtest = []() -> bool
+    {
+        constexpr auto fPI = std::numbers::pi_v<double>;
+        constexpr auto fE = std::numbers::e_v<double>;
+        constexpr auto i32 = 256;
+
+        constexpr double A[] = {
+            (double)cmp::log(fPI), (double)cmp::log(fE), (double)cmp::log((double)i32),
+            (double)cmp::exp(fPI), (double)cmp::exp(fE), (double)cmp::exp((double)i32),
+            (double)cmp::pow(fPI, 2), (double)cmp::pow(fE, 2), (double)cmp::pow((double)i32, 2),
+            (double)cmp::pow(fPI, 2.2), (double)cmp::pow(fE, 2.2), (double)cmp::pow((double)i32, 2.2)
+        };
+        const double B[] = {
+            (double)std::log(fPI), (double)std::log(fE), (double)std::log(i32),
+            (double)std::exp(fPI), (double)std::exp(fE), (double)std::exp(i32),
+            (double)std::pow(fPI, 2), (double)std::pow(fE, 2), (double)std::pow(i32, 2),
+            (double)std::pow(fPI, 2.2), (double)std::pow(fE, 2.2), (double)std::pow(i32, 2.2)
+        };
+
+        for (size_t i = 0; i < 12; ++i)
+        {
+            const auto Ratio = std::max(A[i], B[i]) / std::min(A[i], B[i]);
+            const auto Percent = cmp::abs((1.0 - Ratio) * 100);
+
+            // Can be adjusted with the cmp::Taylorsteps variable.
+            if (Percent >= 0.01)
+            {
+                printf("CMP-math test %zu: +- %.5f %%\n", i, Percent);
+            }
+        }
 
         return true;
     }();

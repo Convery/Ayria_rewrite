@@ -19,17 +19,22 @@
 // Ignore warnings from third-party code.
 #pragma warning(push, 0)
 
+// Feature-test macros.
+#include <version>
+
 // Standard-library includes for libUtilities.
 #include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <execution>
 #include <filesystem>
 #include <functional>
 #include <format>
 #include <io.h>
 #include <map>
 #include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -50,6 +55,7 @@
 #include <Windows.h>
 #include <winioctl.h>
 #include <ntddscsi.h>
+#include <windowsx.h>
 #else
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -74,6 +80,12 @@ using namespace std::literals;
 #include "Crypto/qDSA.hpp"
 #include "Crypto/SHA.hpp"
 #include "Crypto/Tiger192.hpp"
+
+//#include "Graphics/Renderer.hpp"
+#include "Graphics/AAColor.hpp"
+#include "Graphics/AAFont.hpp"
+#include "Graphics/AAImage.hpp"
+#include "Graphics/Renderer.hpp"
 
 #include "Encoding/Base58.hpp"
 #include "Encoding/Base64.hpp"
@@ -103,133 +115,59 @@ using namespace std::literals;
     // Python-esque constructs for loops.
     #pragma region Python
 
-    // for (const auto &[Index, Value] : Enumerate(std::vector{ 1, 2, 3, 4 })) = { {0, 1}, {1, 2}, ... }
-    template <typename T, typename Iter = decltype(std::declval<T>().begin()), typename = decltype(std::declval<T>().size())>
-    constexpr auto Enumerate(T &&Iteratable, size_t Start = 0)
+    // for (const auto &x : Slice({1, 2, 3, 4, 5}, 1, 3)) = { 2, 3, 4 }
+    template <typename T, typename Container> constexpr auto Slice(const Container &Args, int Begin, int End)
     {
-        // This should be optimized away..
-        struct Countediterator_t
-        {
-            size_t Index, Size;
-            Iter Iterator;
+        const auto Range = std::span(Args);
+        const auto First = std::next(Range.begin(), Begin);
+        const auto Last = End ? std::next(Range.begin(), End) : std::prev(Range.end(), -End);
 
-            bool operator !=(const std::default_sentinel_t &Right) const { return !!Size; }
-            auto operator *() const { return std::tie(Index, *Iterator); }
-            void operator ++() { ++Index; --Size; ++Iterator; }
-        };
-        struct Wrapper_t
-        {
-            size_t Start;
-            T Iterable;
-
-            auto begin() { return Countediterator_t{ Start, Iterable.size(), Iterable.begin() }; }
-            static auto end() { return std::default_sentinel_t{}; }
-        };
-
-        return Wrapper_t{ Start, Iteratable };
-    }
-
-    // for (const auto &[Index, Value] : Enumerate({ 1, 2, 3, 4 })) = { {0, 1}, {1, 2}, ... }
-    template <typename T, typename Iter = decltype(std::declval<std::vector<T>>().begin())>
-    constexpr auto Enumerate(std::initializer_list<T> &&Args, size_t Start = 0)
-    {
-        // This should be optimized away..
-        struct Countediterator_t
-        {
-            size_t Index, Size;
-            Iter Iterator;
-
-            bool operator !=(const std::default_sentinel_t &Right) const { return !!Size; }
-            auto operator *() const { return std::tie(Index, *Iterator); }
-            void operator ++() { ++Index; --Size; ++Iterator; }
-        };
-        struct Wrapper_t
-        {
-            size_t Start;
-            std::vector<T> Iterable;
-
-            auto begin() { return Countediterator_t{ Start, Iterable.size(), Iterable.begin() }; }
-            static auto end() { return std::default_sentinel_t{}; }
-        };
-
-        return Wrapper_t{ Start, Args };
+        return std::ranges::subrange(First, Last);
     }
 
     // for (const auto &x : Range(1, 100, 2)) = { 1, 3, 5 ... }
-    template <typename Valuetype, typename Steptype = int>
-    constexpr auto Range(Valuetype Start, Valuetype Stop, Steptype Stepsize = 1)
+    template <typename T, typename Steptype = int> constexpr auto Range(T Start, T Stop, Steptype Stepsize = 1)
     {
-        // This should be optimized away..
-        struct Iterator_t
-        {
-            Valuetype Current, Limit;
-            Steptype Step;
+        return std::views::iota(Start, Stop) | std::views::stride(Stepsize);
+    }
 
-            bool operator !=(const std::default_sentinel_t &Right) const { return Current != Limit; }
-            const auto operator *() const { return Current; }
-            void operator ++()
-            {
-                if constexpr (std::is_arithmetic_v<Valuetype>) Current += Step;
-                else std::advance(Current, Step);
-            }
-        };
-        struct Wrapper_t
-        {
-            Valuetype Start, Stop;
-            Steptype Stepsize;
+    // for (const auto &[Index, Value] : Enumerate({ 1, 2, 3, 4 })) = { {0, 1}, {1, 2}, ... }
+    template <typename T, typename Container> constexpr auto Enumerate(const Container &Args, size_t Start = 0)
+    {
+        const auto Indicies = std::views::iota(Start, Start + Args.size());
+        return std::views::zip(Indicies, Args);
+    }
 
-            auto begin() { return Iterator_t{ Start, Stop, Stepsize }; }
-            static auto end() { return std::default_sentinel_t{}; }
-        };
+    // MSVC deduction needs help..
+    template <typename Range> requires std::ranges::range<Range> constexpr auto Enumerate(const Range &Args, size_t Start = 0)
+    {
+        const auto Indicies = std::views::iota(Start, Start + std::ranges::distance(Args));
+        return std::views::zip(Indicies, Args);
+    }
 
-        // Infinite loop..
-        assert(Stepsize != 0);
+    // Need to extend the lifetime of the list.
+    template <typename T> constexpr auto Enumerate(const std::initializer_list<T> &Args, size_t Start = 0)
+    {
+        std::vector<std::pair<size_t, T>> Vector;
+        Vector.reserve(Args.size());
 
-        return Wrapper_t{ Start, Stop, Stepsize };
+        for (const auto &[Index, Item] : Enumerate<T, std::initializer_list<T>>(Args, Start))
+            Vector.emplace_back(Index, Item);
+
+        return Vector;
+    }
+    template <typename T> constexpr auto Slice(const std::initializer_list<T> &Args,  int Begin, int End)
+    {
+        std::vector<T> Vector;
+        Vector.reserve(Args.size());
+
+        for (const auto &Item : Slice<T, std::initializer_list<T>>(Args, Begin, End))
+            Vector.emplace_back(Item);
+
+        return Vector;
     }
 
     #pragma endregion
-
-    // NOTE(tcn): Just until STL supports ranges::zip, a naive implementation returning references.
-    // std::vector a{ 1, 2, 3 }, b{ 4, 5, 6 }, c{ 7, 8, 9 };
-    // for (auto [A, B, C] : Zip(a, b, c)) { A = C; }
-    constexpr auto Zip(auto &...Args)
-    {
-        struct Tupleiterator_t
-        {
-            size_t Size;
-            std::tuple<decltype(Args.begin())...> Iterators;
-
-            bool operator !=(const std::default_sentinel_t &Right) const { return !!Size; }
-            void operator ++() { --Size; std::apply([](auto &...x) { (..., std::advance(x, 1)); }, Iterators); }
-
-            auto operator *()
-            {
-                return[&]<size_t ...Index>(std::index_sequence<Index...>)
-                {
-                    return std::forward_as_tuple((*std::get<Index>(Iterators))...);
-                }(std::make_index_sequence<sizeof...(Args)>());
-            }
-        };
-        struct Wrapper_t
-        {
-            size_t Size;
-            std::tuple<decltype(Args.begin())...> Iterators;
-
-            auto begin() { return Tupleiterator_t{ Size, Iterators }; }
-            static auto end() { return std::default_sentinel_t{}; }
-        };
-
-        auto Min = [](auto &&Self, auto a, auto b, auto... x)
-        {
-            if constexpr (sizeof...(x) == 0)
-                return a < b ? a : b;
-            else
-                return Self(Self, Self(Self, a, b), x...);
-        };
-
-        return Wrapper_t{ Min(Min, (Args.size())...), { Args.begin()... } };
-    }
 
     // Helper for debug-builds.
     #if defined (_WIN32)
@@ -270,7 +208,7 @@ using namespace std::literals;
         // Xoroshiro128+
         inline uint64_t Next()
         {
-            static uint64_t Table[2]{ __rdtsc(), Hash::WW64(__rdtsc()) };
+            static uint64_t Table[2]{ __rdtsc() ^ Hash::WW64(std::this_thread::get_id()), Hash::WW64(__rdtsc() ^ std::thread::hardware_concurrency()) };
             const uint64_t Result = Table[0] + Table[1];
             const uint64_t S1 = Table[0] ^ Table[1];
 
