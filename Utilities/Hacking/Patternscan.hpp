@@ -9,6 +9,7 @@
 #pragma once
 #include <Utilities/Utilities.hpp>
 
+
 namespace Hacking
 {
     // Generally retrieved from Memory.hpp
@@ -19,14 +20,28 @@ namespace Hacking
         using Patternmask_t = std::basic_string<uint8_t>;
 
         // Find the address of a single pattern in the range.
+        inline std::uintptr_t Findpattern(const Memoryrange_t &Range, const Patternmask_t &Pattern)
+        {
+            const auto Iteratable = std::span((const uint8_t *)Range.first, Range.second - Range.first);
+            const auto Iterator = std::search(Iteratable.begin(), Iteratable.end(), std::boyer_moore_horspool_searcher(Pattern.begin(), Pattern.end()));
+
+            if (Iterator == Iteratable.end()) [[unlikely]] return 0;
+            return Range.first + std::distance(Iteratable.begin(), Iterator);
+        }
         inline std::uintptr_t Findpattern(const Memoryrange_t &Range, const Patternmask_t &Pattern, const Patternmask_t &Mask)
         {
-            assert(Pattern.size() == Mask.size());  assert(Pattern.size() != 0);
+            assert(Pattern.size() == Mask.size()); assert(Pattern.size() != 0);
             assert(Range.second != 0); assert(Range.first != 0);
             assert(Mask[0] != 0); // The first byte can't be a wildcard.
 
+            // If there's no wildcards, we can use a better algorithm.
+            if (!Mask.contains(uint8_t(0)))
+            {
+                return Findpattern(Range, Pattern);
+            }
+
             size_t Count = Range.second - Range.first - Pattern.size();
-            auto Base = (const uint8_t *)Range.first;
+            auto Base = reinterpret_cast<const uint8_t *>(Range.first);
             const uint8_t Firstbyte = Pattern[0];
 
             // Inline compare.
