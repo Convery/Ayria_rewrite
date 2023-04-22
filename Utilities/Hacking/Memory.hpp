@@ -183,28 +183,28 @@ namespace Hacking
         return Originalprotection;
     }
 
-    // RTTI version for unprotecting a range.
-    struct RTTI_Memprotect final
+    // RAII version for unprotecting a range.
+    struct RAII_Memprotect final
     {
         const std::uintptr_t lAddress;
         unsigned long lProtection;
         const size_t lSize;
 
-        explicit RTTI_Memprotect(const std::uintptr_t Address, const size_t Size) : lAddress(Address), lSize(Size)
+        explicit RAII_Memprotect(const std::uintptr_t Address, const size_t Size) : lAddress(Address), lSize(Size)
         {
             lProtection = Unprotectrange(lAddress, lSize);
         }
-        ~RTTI_Memprotect()
+        ~RAII_Memprotect()
         {
             Protectrange(lAddress, lSize, lProtection);
         }
     };
-    [[nodiscard]] inline RTTI_Memprotect Make_writeable(std::uintptr_t Address, const size_t Size)
+    [[nodiscard]] inline RAII_Memprotect Make_writeable(std::uintptr_t Address, const size_t Size)
     {
-        return RTTI_Memprotect(Address, Size);
+        return RAII_Memprotect(Address, Size);
     }
-    [[nodiscard]] inline RTTI_Memprotect Make_writeable(const void *Address, const size_t Size)
+    [[nodiscard]] inline RAII_Memprotect Make_writeable(const void *Address, const size_t Size)
     {
-        return RTTI_Memprotect(reinterpret_cast<std::uintptr_t>(Address), Size);
+        return RAII_Memprotect(reinterpret_cast<std::uintptr_t>(Address), Size);
     }
 }

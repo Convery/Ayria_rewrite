@@ -31,7 +31,7 @@ namespace FS
         return Code ? 0 : Size;
     }
 
-    // RTTI view of a file.
+    // RAII view of a file.
     class MMap_t
     {
         #if defined (_WIN32)

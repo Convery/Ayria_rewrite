@@ -74,7 +74,7 @@ class Ringbuffer_t
     }
 
     // STL compatibility.
-    [[nodiscard]] auto end() const noexcept { return std::default_sentinel_t{}; }
+    [[nodiscard]] static auto end() noexcept { return std::default_sentinel_t{}; }
     [[nodiscard]] auto begin() const noexcept { return std::counted_iterator{ Iterator_t{ Advance(Head, -1), Size, Storage.data() }, Size }; }
 
     // STL-like modifiers.

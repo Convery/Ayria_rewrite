@@ -353,7 +353,7 @@ namespace sqlite
             return *this;
         }
 
-        // Reset can also be used to avoid RTTI evaluation.
+        // Reset can also be used to avoid RAII evaluation.
         void Execute() noexcept { Extractmultiple([]() {}); sqlite3_reset(Statement.get()); }
         void Reset() const noexcept { sqlite3_reset(Statement.get()); }
 

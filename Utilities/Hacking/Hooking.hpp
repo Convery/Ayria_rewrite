@@ -188,6 +188,6 @@ namespace Hacking
     #endif
 
     // Should really be an intrinsic..
-    void __stdcall PUSHA();
-    void __stdcall POPA();
+    INLINE_ATTR void __stdcall PUSHA();
+    INLINE_ATTR void __stdcall POPA();
 }
