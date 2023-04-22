@@ -213,6 +213,14 @@ template <typename T> struct vec2_t
     template <typename U> constexpr operator U() const { return { x, y }; }
     template <typename A, typename B> constexpr vec2_t(A X, B Y) : x(X), y(Y) {}
 
+    // For handling POINT and similar structs.
+    template <typename U> requires (requires { [](U &This) { auto &[a1, a2] = This; }; })
+    constexpr vec2_t(const U &Object)
+    {
+         const auto &[a1, a2] = Object;
+         *this = vec2_t{ a1, a2 };
+    }
+
     constexpr bool operator!=(const vec2_t &Right) const { return !operator==(Right); }
     constexpr bool operator==(const vec2_t &Right) const { return x == Right.x && y == Right.y; }
     constexpr bool operator<(const vec2_t &Right)  const { return (x < Right.x) || (y < Right.y); }
@@ -242,6 +250,14 @@ template <typename T> struct vec3_t
     template <typename U> constexpr operator U() const { return { x, y, z }; }
     constexpr vec3_t(const vec3_t &Other) { x = Other.x; y = Other.y; z = Other.z; }
     template <typename A, typename B, typename C> constexpr vec3_t(A X, B Y, C Z) : x(X), y(Y), z(Z) {}
+
+    // For handling RGBTRIPPLE and similar structs.
+    template <typename U> requires (requires { [](U &This) { auto &[a1, a2, a3] = This; }; })
+    constexpr vec3_t(const U &Object)
+    {
+         const auto &[a1, a2, a3] = Object;
+         *this = vec3_t{ a1, a2, a3 };
+    }
 
     constexpr bool operator!=(const vec3_t &Right) const { return !operator==(Right); }
     constexpr bool operator==(const vec3_t &Right) const { return x == Right.x && y == Right.y && z == Right.z; }
@@ -278,6 +294,14 @@ template <typename T> struct vec4_t
     template <typename U> constexpr operator U() const { return { x, y, z, w }; }
     constexpr vec4_t(const vec4_t &Other) { x = Other.x; y = Other.y; z = Other.z; w = Other.w; }
     template <typename A, typename B, typename C, typename D> constexpr vec4_t(A X, B Y, C Z, D W) : x(X), y(Y), z(Z), w(W) {}
+
+    // For handling RECT and similar structs.
+    template <typename U> requires (requires { [](U &This) { auto &[a1, a2, a3, a4] = This; }; })
+    constexpr vec4_t(const U &Object)
+    {
+         const auto &[a1, a2, a3, a4] = Object;
+         *this = vec4_t{ a1, a2, a3, a4 };
+    }
 
     constexpr operator bool() const { return !!(x + y + z + w); }
     constexpr bool operator!=(const vec4_t &Right) const { return !operator==(Right); }
