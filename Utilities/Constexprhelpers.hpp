@@ -33,6 +33,7 @@ constexpr std::array<T, N + M> operator+(const std::array<T, N> &Left, const std
 // Compile-time
 namespace cmp
 {
+    #pragma region Concepts
     template <typename T> concept Byte_t = sizeof(T) == 1;
     template <typename T> concept Range_t = requires (T t) { t.begin(); t.end(); typename T::value_type; };
     template <typename T> concept Sequential_t = requires (T t) { t.data(); t.size(); typename T::value_type; };
@@ -44,9 +45,15 @@ namespace cmp
     template <template <typename ...> class Template, typename... Types> constexpr bool isDerived<Template<Types...>, Template> = true;
 
     // Partially typed instantiation.
-    template <typename Type, template<typename, auto> class Template> constexpr bool isDerivedEx = false;
+    template <typename Type, template <typename, auto> class Template> constexpr bool isDerivedEx = false;
     template <template <typename, auto> class Template, typename T, auto A> constexpr bool isDerivedEx<Template<T, A>, Template> = true;
 
+    // For metaprogramming / P2593
+    template <typename ...> constexpr bool always_true = true;
+    template <typename ...> constexpr bool always_false = false;
+    #pragma endregion
+
+    #pragma region Typeselection
     // Helper to avoid nested conditionals in templates.
     template <bool Conditional, typename T> struct Case_t : std::bool_constant<Conditional> { using type = T; };
     using Defaultcase_t = Case_t<false, void>;
@@ -57,7 +64,9 @@ namespace cmp
         Case_t<(std::bit_width(Maxvalue) > 16), uint32_t>,
         Case_t<(std::bit_width(Maxvalue) >  8), uint16_t>,
         Case_t<(std::bit_width(Maxvalue) <= 8), uint8_t> >::type;
+    #pragma endregion
 
+    #pragma region Array
     // Sometimes we just need a bit more room..
     template <typename T, size_t Old, size_t New>
     constexpr std::array<T, New> resize_array(const std::array<T, Old> &Input)
@@ -78,115 +87,98 @@ namespace cmp
             return std::array<T, N - 1>{ { Input[Index]... }};
         }(Input, std::make_index_sequence<N - 1>());
     }
+    #pragma endregion
 
-    // Get the underlying bytes of an object / range in constexpr mode.
-    constexpr std::span<const uint8_t> getBytes(std::span<const uint8_t> Input) { return Input; }
-    template <typename T> requires(!Range_t<T>) constexpr Blob_t getBytes(const T &Value)
-    {
-        const auto Tmp = std::bit_cast<std::array<uint8_t, sizeof(T)>>(Value);
-        Blob_t Buffer{};
-
-        for (const auto Byte : Tmp)
-            Buffer.push_back(Byte);
-
-        return Buffer;
-    }
-    template <Range_t T> requires(std::is_constant_evaluated()) constexpr Blob_t getBytes(const T &Range)
-    {
-        Blob_t Buffer{};
-
-        for (const auto &Item : Range)
-        {
-            if constexpr (sizeof(typename T::value_type) == 1)
-                Buffer.push_back(uint8_t(Item));
-            else
-                Buffer += getBytes(Item);
-        }
-
-        return Buffer;
-    }
-    template <Range_t T> requires(!std::is_constant_evaluated()) constexpr std::span<const uint8_t> getBytes(const T &Range)
-    {
-        return { reinterpret_cast<const uint8_t *>(Range.data()), Range.size() * sizeof(typename T::value_type) };
-    }
-
+    #pragma region Memory
     // Since we can't cast (char *) <-> (void *) in constexpr.
-    template <Byte_t T, Byte_t U> requires (std::is_constant_evaluated()) constexpr bool memcmp(const T *A, const U *B, size_t Size)
+    template <Byte_t T, Byte_t U> constexpr bool memcmp(const T *A, const U *B, size_t Size)
     {
-        while (Size--)
+        if (!std::is_constant_evaluated())
         {
-            if ((U(*A++) ^ T(*B++)) != T{}) [[unlikely]]
-                return false;
+            return 0 == std::memcmp(A, B, Size);
         }
-
-        return true;
-    }
-    template <Byte_t T, Byte_t U> requires (!std::is_constant_evaluated()) constexpr bool memcmp(const T *A, const U *B, size_t Size)
-    {
-        return 0 == std::memcmp(A, B, Size);
-    }
-
-    // Memcpy should be reworked to take size-in-bytes as input for partial copies.
-    template <Byte_t T, Byte_t U> constexpr void memcpy(T *Dst, const U *Src, size_t Sizebytes)
-    {
-        if (!std::is_constant_evaluated()) std::memcpy(Dst, Src, Sizebytes);
         else
         {
-            while (Sizebytes--) *Dst++ = T(*Src++);
-        }
-    }
-    template <Byte_t T, typename U> requires (sizeof(U) != 1) constexpr void memcpy(T *Dst, const U *Src, size_t Sizebytes)
-    {
-        if (!std::is_constant_evaluated()) std::memcpy(Dst, Src, Sizebytes);
-        else
-        {
-            const auto Temp = std::bit_cast<std::array<uint8_t, sizeof(U)>>(*Src);
-            const auto Step = std::min(sizeof(U), Sizebytes);
-
-            for (size_t i = 0; i < Step; ++i)
-                Dst[i] = T(Temp[i]);
-
-            if (Sizebytes -= Step)
+            while (Size--)
             {
-                memcpy(Dst + sizeof(U), ++Src, Sizebytes);
+                if ((U(*A++) ^ T(*B++)) != T{}) [[unlikely]]
+                    return false;
+            }
+
+            return true;
+        }
+    }
+
+    // Memcpy accepts the size in bytes in-case we want partial copies.
+    template <typename T, typename U> constexpr void memcpy(T *Dst, const U *Src, size_t Sizebytes)
+    {
+        if (!std::is_constant_evaluated())
+        {
+            std::memcpy(Dst, Src, Sizebytes);
+        }
+        else
+        {
+            if constexpr (sizeof(T) == sizeof(U))
+            {
+                while (Sizebytes)
+                {
+                    *Dst++ = std::bit_cast<T>(*Src++);
+                    Sizebytes -= sizeof(T);
+                }
+            }
+            else if constexpr (sizeof(T) == 1)
+            {
+                const auto Temp = std::bit_cast<std::array<uint8_t, sizeof(U)>>(*Src);
+                const auto Step = std::min(sizeof(U), Sizebytes);
+
+                for (size_t i = 0; i < Step; ++i)
+                    *Dst++ = Temp[i];
+
+                if (Sizebytes -= Step) return memcpy(Dst, ++Src, Sizebytes);
+            }
+            else if constexpr (sizeof(U) == 1)
+            {
+                const auto Step = std::min(sizeof(T), Sizebytes);
+                std::array<uint8_t, sizeof(T)> Temp{};
+
+                for (size_t i = 0; i < Step; ++i)
+                    Temp[i] = uint8_t(*Src++);
+
+                *Dst++ = std::bit_cast<T>(Temp);
+                if (Sizebytes -= Step) return memcpy(Dst, Src, Sizebytes);
+            }
+            else
+            {
+                static_assert(always_false<T>, "memcpy needs the types to be the same size, or one being 1 byte aligned");
             }
         }
-    }
-    template <typename T, Byte_t U> requires (sizeof(T) != 1) constexpr void memcpy(T *Dst, const U *Src, size_t Sizebytes)
-    {
-        if (!std::is_constant_evaluated()) std::memcpy(Dst, Src, Sizebytes);
-        else
-        {
-            const auto Step = std::min(sizeof(T), Sizebytes);
-            std::array<uint8_t, sizeof(T)> Temp{};
-
-            for (size_t i = 0; i < Step; ++i)
-                Temp[i] = uint8_t(Src[i]);
-
-            *Dst = std::bit_cast<T>(Temp);
-
-            if (Sizebytes -= Step)
-            {
-                memcpy(++Dst, Src + sizeof(T), Sizebytes);
-            }
-        }
-    }
-    template <Byte_t T, size_t N> constexpr void memcpy(T *Dst, const std::array<T, N> &Src)
-    {
-        memcpy(Dst, Src.data(), N);
     }
     template <typename T, typename U> constexpr void memcpy(T *Dst, const U &Src)
     {
-        // Need at least one type to be bytealigned.
-        if constexpr (sizeof(T) != 1 && sizeof(U) != 1)
+        if constexpr (sizeof(T) == sizeof(U))
         {
-            const auto Temp = std::bit_cast<std::array<uint8_t, sizeof(U)>>(Src);
-            return cmp::memcpy(Dst, Temp.data(), sizeof(U));
+            *Dst = std::bit_cast<T>(Src);
+        }
+        else if constexpr (sizeof(T) == 1 || sizeof(U) == 1)
+        {
+            return memcpy(Dst, &Src, sizeof(U) >= sizeof(T) ? sizeof(U) : sizeof(T));
+        }
+        else
+        {
+            const auto A = std::bit_cast<std::array<uint8_t, sizeof(U)>>(Src);
+            auto B = std::bit_cast<std::array<uint8_t, sizeof(T)>>(*Dst);
+
+            const auto Min = sizeof(U) <= sizeof(T) ? sizeof(U) : sizeof(T);
+            for (size_t i = 0; i < Min; ++i) B[i] = A[i];
+
+            *Dst = std::bit_cast<T>(B);
         }
 
-        return cmp::memcpy(Dst, &Src, sizeof(U));
-    }
 
+    }
+    #pragma endregion
+
+    #pragma region Typewrapper
     // Generic container convertible to std::array or std::basic_string depending on usage.
     template <typename T, size_t N> using IntelisenseHack_t = std::array<uint8_t, N * sizeof(T)>;
     template <typename T, size_t N> struct Container_t : IntelisenseHack_t<T, N>
@@ -423,16 +415,55 @@ namespace cmp
     // Some helpful naming conventions.
     template <typename T, size_t N> using Array_t = Container_t<T, N>;
     template <typename T, size_t N = std::dynamic_extent> using Vector_t = Container_t<T, N>;
+    #pragma endregion
 
-    // To get around the STLs asserts.
-    template <Byte_t T, size_t N> constexpr Array_t<uint8_t, N> getBytes(const std::array<T, N> &Value)
+    #pragma region Bytearray
+
+    // Get the underlying bytes of an object / range in constexpr mode.
+    template <typename T> requires(!Range_t<T>) constexpr auto getBytes(const T &Value)
+    {
+        return std::bit_cast<std::array<uint8_t, sizeof(T)>>(Value);
+    }
+    template <Byte_t T, size_t N> constexpr auto getBytes(const std::array<T, N> &Value)
     {
         return[]<size_t ...Index>(const std::array<T, N> &Input, std::index_sequence<Index...>)
         {
             return Array_t<uint8_t, N>{ { uint8_t(Input[Index])... }};
         }(Value, std::make_index_sequence<N>());
     }
+    template <size_t N = std::dynamic_extent> constexpr auto getBytes(std::span<const uint8_t, N> Input) { return Input; }
+    template <Range_t T> requires(std::extent<T>() == 0 && std::is_constant_evaluated()) constexpr auto getBytes(const T &Range)
+    {
+        Blob_t Buffer{}; Buffer.reserve(Range.size() * sizeof(typename T::value_type));
 
+        for (const auto &Item : Range)
+        {
+            const auto Local = std::bit_cast<std::array<uint8_t, sizeof(typename T::value_type)>>(Item);
+            Buffer.append(Local.data(), sizeof(typename T::value_type));
+        }
+
+        return Buffer;
+    }
+    template <Range_t T> requires(std::extent<T>() == 0 && !std::is_constant_evaluated()) constexpr auto getBytes(const T &Range)
+    {
+        return { reinterpret_cast<const uint8_t *>(Range.data()), std::extent<T>() * sizeof(typename T::value_type) };
+    }
+    template <Range_t T> requires(std::is_same_v<std::decay<typename T::value_type>, uint8_t>) constexpr auto getBytes(const T &Range)
+    {
+        return Range;
+    }
+    template <Range_t T> requires(std::extent<T>() != 0 && sizeof(typename T::value_type) != 1) constexpr auto getBytes(const T &Range)
+    {
+        std::array<uint8_t, std::extent<T>() * sizeof(typename T::value_type)> Buffer{};
+        cmp::memcpy(Buffer.data(), Range.data(), std::extent<T>() * sizeof(typename T::value_type));
+
+        return Buffer;
+    }
+
+
+    #pragma endregion
+
+    #pragma region Endian
     // Convert to a different endian (half are NOP on each system).
     template <std::integral T> constexpr T toLittle(T Value)
     {
@@ -502,6 +533,149 @@ namespace cmp
         else
             return Value;
     }
+    #pragma endregion
+
+    #pragma region Math
+
+    // Opt for branchless versions.
+    template <typename T> constexpr T abs(const T &Value)
+    {
+        if constexpr (std::signed_integral<T>)
+        {
+            const auto Mask = Value >> (sizeof(T) * 8 - 1);
+            return (Value + Mask) ^ Mask;
+        }
+        else
+        {
+            return Value * ((Value > 0) - (Value < 0));
+        }
+    }
+    template <typename T> constexpr T min(const T &A, const T &B)
+    {
+        if constexpr (std::signed_integral<T>)
+        {
+            return A + ((B - A) & ((B - A) >> (sizeof(T) * 8 - 1)));
+        }
+        else
+        {
+            return (A < B) * A + (B <= A) * B;
+        }
+    }
+    template <typename T> constexpr T max(const T &A, const T &B)
+    {
+        if constexpr (std::signed_integral<T>)
+        {
+            return A - ((A - B) & ((A - B) >> (sizeof(T) * 8 - 1)));
+        }
+        else
+        {
+            return (A > B) * A + (B >= A) * B;
+        }
+    }
+    template <typename T> constexpr T min(std::initializer_list<T> &&Items)
+    {
+        T Min = 0;
+        for (const auto &Item : Items)
+            Min = min(Min, Item);
+        return Min;
+    }
+    template <typename T> constexpr T max(std::initializer_list<T> &&Items)
+    {
+        T Max = 0;
+        for (const auto &Item : Items)
+            Max = max(Max, Item);
+        return Max;
+    }
+    template <typename T> constexpr T clamp(const T &Value, const T &Min, const T &Max)
+    {
+        return cmp::max(Min, cmp::min(Value, Max));
+    }
+
+    // Plumbing, recursion makes MSVC upset..
+    template <typename T, std::integral U> constexpr T pow_int(T Base, U Exponent)
+    {
+        if (Exponent == 0) return 1;
+        if (Exponent < 0) return pow_int(1 / Base, -Exponent);
+
+        long double Result{ 1.0 };
+        while (Exponent)
+        {
+            if (Exponent & 1) Result *= Base;
+            Exponent >>= 1;
+            Base *= Base;
+        }
+
+        return T(Result);
+    }
+
+    // As we are only doing this in constexpr, we can use a series.
+    constexpr auto Taylorsteps = 512;
+    template <std::floating_point T = double> constexpr T log(const T &Value)
+    {
+        // Prefer optimized implementations.
+        if (!std::is_constant_evaluated())
+        {
+            return std::log(Value);
+        }
+
+        // Undefined for negative values.
+        if (Value < T{ 0.0 }) return std::numeric_limits<T>::quiet_NaN();
+
+        // Taylor series.
+        long double Sum{}, Term{ (Value - 1) / (Value + 1) };
+        const long double Squared{ Term * Term };
+        for (int i = 0; i < Taylorsteps; ++i)
+        {
+            Sum += Term / (2 * i + 1);
+            Term *= Squared;
+        }
+
+        return T(2 * Sum);
+    }
+    template <std::floating_point T = double> constexpr T exp(const T &Value)
+    {
+        // Prefer optimized implementations.
+        if (!std::is_constant_evaluated())
+        {
+            return std::exp(Value);
+        }
+
+        // Check if an integer got promoted.
+        if (Value == T(int64_t(Value)))
+        {
+            constexpr auto Euler = 2.7182818284590452353602874713527L;
+            return pow_int(Euler, int64_t(Value));
+        }
+
+        // Taylor series.
+        long double Sum{ 1.0 }, Term{ 1.0 };
+        for (int i = 1; i < Taylorsteps; ++i)
+        {
+            Term *= Value / i;
+            Sum += Term;
+        }
+        return T(Sum);
+    }
+    template <std::floating_point T = double> constexpr T pow(const T &Base, const double &Exponent)
+    {
+        // Prefer optimized implementations.
+        if (!std::is_constant_evaluated())
+        {
+            return std::pow(Base, Exponent);
+        }
+
+        // Check if an integer got promoted.
+        if (Exponent == T(int64_t(Exponent)))
+        {
+            return pow_int(Base, int64_t(Exponent));
+        }
+        else
+        {
+            return exp(Exponent * log(Base));
+        }
+    }
+
+    #pragma endregion
 }
 
 // Additions for old STL versions.
@@ -566,8 +740,8 @@ namespace std
         else if constexpr (sizeof(_Ty) == 4) return static_cast<_Ty>(_Byteswap_ulong(static_cast<uint32_t>(_Val)));
         else if constexpr (sizeof(_Ty) == 8) return static_cast<_Ty>(_Byteswap_uint64(static_cast<uint64_t>(_Val)));
 
-        // Should never happen.
-        else static_assert(false, "Unexpected integer size");
+        // 128-bit is not supported.
+        else static_assert(cmp::always_false<_Ty>, "Unexpected integer size");
     }
 }
 #endif
