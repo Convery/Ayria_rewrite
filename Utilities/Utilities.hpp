@@ -85,6 +85,7 @@ using namespace std::literals;
 #include "Graphics/AAColor.hpp"
 #include "Graphics/AAFont.hpp"
 #include "Graphics/AAImage.hpp"
+#include "Graphics/Composition.hpp"
 #include "Graphics/Renderer.hpp"
 
 #include "Encoding/Base58.hpp"

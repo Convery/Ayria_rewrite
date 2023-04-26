@@ -189,25 +189,25 @@ int main()
         return true;
     }();
 
-    // Encoding/JSON.hpp
+    // Encoding/JSON.hpp (constexpr if __cpp_lib_variant >= 202106L)
     [[maybe_unused]] const auto JSONTest = []() -> bool
     {
         constexpr auto Input = R"({ "Object" : { "Key" : 42 }, "Array" : [ 0, 1, 2, "mixed" ] })";
         const auto Parsed = JSON::Parse(Input);
-        const auto int42 = Parsed["Object"]["Key"];
-        const auto int2 = Parsed["Array"][2];
-        const auto Mix = Parsed["Array"][3];
+        const auto int42 = Parsed[u8"Object"][u8"Key"];
+        const auto int2 = Parsed[u8"Array"][2];
+        const auto Mix = Parsed[u8"Array"][3];
 
-        const auto Test0 = uint64_t(42) == *int42.Get<uint64_t>();
+        const auto Test0 = uint32_t(42) == int42.Get<uint32_t>();
         const auto Test1 = uint64_t(42) == (uint64_t)int42;
         const auto Test2 = uint64_t(2) == (uint64_t)int2;
-        const auto Test3 = u8"mixed"s == *Mix.Get<std::u8string>();
+        const auto Test3 = u8"mixed"s == Mix.Get<std::u8string>();
 
         if (!Test0 || !Test1 || !Test2 || !Test3)
             printf("BROKEN: JSON Parsing\n");
 
-        const auto Dump = Parsed.Dump();
-        if (Dump != JSON::Parse(Dump).Dump())
+        const auto Dump = Parsed.dump();
+        if (Dump != JSON::Parse(Dump).dump())
             printf("BROKEN: JSON Parsing\n");
 
         return true;
