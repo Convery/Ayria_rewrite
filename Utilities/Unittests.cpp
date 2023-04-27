@@ -17,11 +17,11 @@ int main()
     [[maybe_unused]] const auto Utilitiestest = []() -> bool
     {
         // Enumeration.
-        for (const auto &[Index, Item] : Enumerate({ 1, 2, 3 }, 1))
+        for (const auto &[Index, Item] : Enumerate({ 1U, 2U, 3U }, 1))
         {
             if (Index != Item) printf("BROKEN: Enum utility\n");
         }
-        for (const auto &[Index, Item] : Enumerate({ 1, 2, 3 }))
+        for (const auto &[Index, Item] : Enumerate({ 1U, 2U, 3U }))
         {
             if (Index != (Item - 1)) printf("BROKEN: Enum utility\n");
         }
@@ -80,17 +80,21 @@ int main()
             As there's little to no reason to ever consteval, we just do runtime checks.
         */
 
+        // Intentionally bad seeds for Private- and Shared-keys.
         const auto [PK1, SK1] = qDSA::Createkeypair(123);
         const auto [PK2, SK2] = qDSA::Createkeypair(321);
 
+        // Key-exchange.
         const auto X1 = qDSA::Generatesecret(PK1, SK2);
         const auto X2 = qDSA::Generatesecret(PK2, SK1);
         if (X1 != X2) printf("BROKEN: qDSA keysharing\n");
 
+        // Signatures should be unique.
         const auto Sig1 = qDSA::Sign(PK1, SK1, cmp::toArray("123"));
         const auto Sig2 = qDSA::Sign(PK2, SK2, cmp::toArray("abc"));
         if (Sig1 == Sig2) printf("BROKEN: qDSA signing\n");
 
+        // Verify that bad signatures fail properly.
         const auto V1 = qDSA::Verify(PK1, Sig1, cmp::toArray("123"));
         const auto V2 = qDSA::Verify(PK2, Sig2, cmp::toArray("abc"));
         const auto V3 = qDSA::Verify(PK1, Sig2, cmp::toArray("abc"));
@@ -165,31 +169,31 @@ int main()
     [[maybe_unused]] const auto Checksumtest = []() -> bool
     {
         // Compiletime version.
-        static_assert(Hash::WW32("12345") == 0xEE98FD70UL, "BROKEN: WW32 hashing");
-        static_assert(Hash::FNV1_32("12345") == 0xDEEE36FAUL, "BROKEN: FNV32 hashing");
-        static_assert(Hash::CRC32A("12345") == 0xCBF53A1CUL, "BROKEN: CRC32-B hashing");
-        static_assert(Hash::CRC32B("12345") == 0x426548B8UL, "BROKEN: CRC32-A hashing");
-        static_assert(Hash::CRC32T("12345") == 0x0315B56CUL, "BROKEN: CRC32-T hashing");
-        static_assert(Hash::FNV1a_32("12345") == 0x43C2C0D8UL, "BROKEN: FNV32a hashing");
-        static_assert(Hash::WW64("12345") == 0x3C570C468027DB01ULL, "BROKEN: WW64 hashing");
-        static_assert(Hash::FNV1_64("12345") == 0xA92F4455DA95A77AULL, "BROKEN: FNV64 hashing");
-        static_assert(Hash::FNV1a_64("12345") == 0xE575E8883C0F89F8ULL, "BROKEN: FNV64a hashing");
+        static_assert(Hash::WW32("12345") == 0xEE98FD70UL, "BROKEN: WW32 checksum");
+        static_assert(Hash::FNV1_32("12345") == 0xDEEE36FAUL, "BROKEN: FNV32 checksum");
+        static_assert(Hash::CRC32A("12345") == 0xCBF53A1CUL, "BROKEN: CRC32-B checksum");
+        static_assert(Hash::CRC32B("12345") == 0x426548B8UL, "BROKEN: CRC32-A checksum");
+        static_assert(Hash::CRC32T("12345") == 0x0315B56CUL, "BROKEN: CRC32-T checksum");
+        static_assert(Hash::FNV1a_32("12345") == 0x43C2C0D8UL, "BROKEN: FNV32a checksum");
+        static_assert(Hash::WW64("12345") == 0x3C570C468027DB01ULL, "BROKEN: WW64 checksum");
+        static_assert(Hash::FNV1_64("12345") == 0xA92F4455DA95A77AULL, "BROKEN: FNV64 checksum");
+        static_assert(Hash::FNV1a_64("12345") == 0xE575E8883C0F89F8ULL, "BROKEN: FNV64a checksum");
 
         // Runtime version.
-        if (Hash::WW32("12345") != 0xEE98FD70UL) printf("BROKEN: WW32 hashing\n");
-        if (Hash::FNV1_32("12345") != 0xDEEE36FAUL) printf("BROKEN: FNV32 hashing\n");
-        if (Hash::CRC32A("12345") != 0xCBF53A1CUL) printf("BROKEN: CRC32-B hashing\n");
-        if (Hash::CRC32B("12345") != 0x426548B8UL) printf("BROKEN: CRC32-A hashing\n");
-        if (Hash::CRC32T("12345") != 0x0315B56CUL) printf("BROKEN: CRC32-T hashing\n");
-        if (Hash::FNV1a_32("12345") != 0x43C2C0D8UL) printf("BROKEN: FNV32a hashing\n");
-        if (Hash::WW64("12345") != 0x3C570C468027DB01ULL) printf("BROKEN: WW64 hashing\n");
-        if (Hash::FNV1_64("12345") != 0xA92F4455DA95A77AULL) printf("BROKEN: FNV64 hashing\n");
-        if (Hash::FNV1a_64("12345") != 0xE575E8883C0F89F8ULL) printf("BROKEN: FNV64a hashing\n");
+        if (Hash::WW32("12345") != 0xEE98FD70UL) printf("BROKEN: WW32 checksum\n");
+        if (Hash::FNV1_32("12345") != 0xDEEE36FAUL) printf("BROKEN: FNV32 checksum\n");
+        if (Hash::CRC32A("12345") != 0xCBF53A1CUL) printf("BROKEN: CRC32-B checksum\n");
+        if (Hash::CRC32B("12345") != 0x426548B8UL) printf("BROKEN: CRC32-A checksum\n");
+        if (Hash::CRC32T("12345") != 0x0315B56CUL) printf("BROKEN: CRC32-T checksum\n");
+        if (Hash::FNV1a_32("12345") != 0x43C2C0D8UL) printf("BROKEN: FNV32a checksum\n");
+        if (Hash::WW64("12345") != 0x3C570C468027DB01ULL) printf("BROKEN: WW64 checksum\n");
+        if (Hash::FNV1_64("12345") != 0xA92F4455DA95A77AULL) printf("BROKEN: FNV64 checksum\n");
+        if (Hash::FNV1a_64("12345") != 0xE575E8883C0F89F8ULL) printf("BROKEN: FNV64a checksum\n");
 
         return true;
     }();
 
-    // Encoding/JSON.hpp (constexpr if __cpp_lib_variant >= 202106L)
+    // Encoding/JSON.hpp (mostly constexpr if __cpp_lib_variant >= 202106L)
     [[maybe_unused]] const auto JSONTest = []() -> bool
     {
         constexpr auto Input = R"({ "Object" : { "Key" : 42 }, "Array" : [ 0, 1, 2, "mixed" ] })";
@@ -272,7 +276,7 @@ int main()
         if (4 != Buffer.front() || 2 != Buffer.back() || 3 != Buffer.size())
             printf("BROKEN: Ringbuffer core\n");
 
-        // Ensure that ranges are supported.
+        // Ensure that ranges are supported by copying the 3 elements.
         std::ranges::copy(Buffer | std::views::reverse, Rangetest.begin());
         for (const auto &[Index, Value] : Enumerate(Buffer, 3)) Rangetest[Index] = Value;
 
@@ -287,7 +291,7 @@ int main()
     {
         Bytebuffer_t Buffer{};
 
-        Buffer << uint32_t(42);
+        Buffer << uint32_t(0x2A);
         Buffer.Write(uint8_t(2));
         Buffer.Write(uint8_t(3), false);
         Buffer << "Hello";
@@ -341,7 +345,6 @@ int main()
 
         return true;
     }();
-
 
     printf("Testing done..\n");
     system("pause");

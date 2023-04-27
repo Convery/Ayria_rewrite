@@ -151,7 +151,7 @@ namespace Backend::Plugins
         if (const auto EP = getELFEntrypoint())
         {
             // Restore the code in-case the app does integrity checking.
-            const auto RTTI = Hacking::Make_writeable(EP, EPSize);
+            const auto RAII = Hacking::Make_writeable(EP, EPSize);
             std::memcpy((void *)EP, (void *)EPTrampoline, EPSize);
         }
 
@@ -191,7 +191,7 @@ namespace Backend::Plugins
         if (const auto EP = getPEEntrypoint())
         {
             // Restore the code in-case the app does integrity checking.
-            const auto RTTI = Hacking::Make_writeable(EP, EPSize);
+            const auto RAII = Hacking::Make_writeable(EP, EPSize);
             std::memcpy((void *)EP, (void *)EPTrampoline, EPSize);
         }
 
