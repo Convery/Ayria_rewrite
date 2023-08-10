@@ -56,6 +56,8 @@
 #include <winioctl.h>
 #include <ntddscsi.h>
 #include <windowsx.h>
+#include <winternl.h>
+#include <D3dkmthk.h>
 #else
 #include <sys/mman.h>
 #include <sys/types.h>

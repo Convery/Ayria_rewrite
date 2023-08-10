@@ -18,6 +18,8 @@
     (2)   >> [](int &a, &b, &c) -> void {};     // Lambda with the expected types, executed for each row.
     (3)   >> std::tie(a, b);                    // Tuple with the expected types.
     (4)   >> myOutput;                          // Single variable.
+
+    Remember that when doing multiple operations, transactions enable batching and will be faster.
 */
 
 #pragma once

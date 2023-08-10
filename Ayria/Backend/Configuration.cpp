@@ -72,13 +72,43 @@ namespace Backend::Config
 
         // Slow things down a bit.
         for (size_t i = 0; i < 1'000; ++i)
-            Temporary = Hash::SHA512(Temporary);
+            Temporary = Hash::SHA512(Temporary + cmp::getBytes(i));
 
         const auto Seed = Hash::SHA512(Hash::SHA256(Temporary) + Hash::SHA256(Combined));
         std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Seed);
     }
     void setPublickey_HWID()
     {
+        // TPM is not commonly available, but most stable.
+        if (const auto TPMEK = HWID::getTPMEK())
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(*TPMEK));
+            return;
+        }
+
+        // BIOS shouldn't update too often..
+        const auto BIOS = HWID::getSMBIOS();
+        if (!BIOS.Caseserial.empty())   // Laptops only.
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.Caseserial));
+            return;
+        }
+        if (!BIOS.MOBOSerial.empty())   // Questionable uniqueness.
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.MOBOSerial));
+            return;
+        }
+        if (!BIOS.RAMSerial.empty()) // Primarily ECC memory.
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.RAMSerial));
+            return;
+        }
+        if (!BIOS.UUID.empty())         // OEM only.
+        {
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.UUID));
+            return;
+        }
+
         // Diskinfo should be relatively stable.
         const auto Diskinfo = HWID::getDiskinfo();
         if (!Diskinfo.UUID.empty())
@@ -92,42 +122,18 @@ namespace Backend::Config
             return;
         }
 
-        // Prefer BIOS as that rarely changes.
-        const auto BIOS = HWID::getSMBIOS();
-        if (!BIOS.Caseserial.empty())
+        // Unlikely that two computers on the same network has the same CPU.
+        if (const auto MAC = HWID::getRouterMAC(); !MAC.empty())
         {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.Caseserial));
-            return;
-        }
-        if (!BIOS.MOBOSerial.empty())
-        {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.MOBOSerial));
-            return;
-        }
-        if (!BIOS.UUID.empty())
-        {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.UUID));
-            return;
-        }
-        if (!BIOS.RAMSerial.empty())
-        {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(BIOS.RAMSerial));
+            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA256(MAC) + Hash::SHA256(HWID::getCPUinfo().RAW));
             return;
         }
 
-        // Ask Windows for a TPM-/UEFI-stored ID.
+        // Ask Windows for a UEFI-stored ID.
         std::array<uint8_t, 4096> Windows{};
         if (const auto Length = GetFirmwareEnvironmentVariableW(L"OfflineUniqueIDRandomSeed", L"{eaec226f-c9a3-477a-a826-ddc716cdc0e3}", Windows.data(), (DWORD)Windows.size()))
         {
             std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(std::span(Windows.data(), Length)));
-            return;
-        }
-
-        // Can't generate a local HWID, try a shared HWID.
-        const auto MAC = HWID::getRouterMAC();
-        if (!MAC.empty())
-        {
-            std::tie(Global.Publickey, *Global.Privatekey) = qDSA::Createkeypair(Hash::SHA512(MAC));
             return;
         }
 

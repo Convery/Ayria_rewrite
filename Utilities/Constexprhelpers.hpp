@@ -51,6 +51,9 @@ namespace cmp
     // For metaprogramming / P2593
     template <typename ...> constexpr bool always_true = true;
     template <typename ...> constexpr bool always_false = false;
+
+    // Struct to create an overload set for use with std::visit and similar functions.
+    template<class... Types> struct Overload : Types... { using Types::operator()...; };
     #pragma endregion
 
     #pragma region Typeselection

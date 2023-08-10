@@ -114,13 +114,13 @@ namespace HWID
                         Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
 
                     const std::string Current((char *)Entry.data());
-                    const auto P1 = Hash::SHA256(Result.RAMSerial);
-                    auto P2 = Hash::SHA256(Current);
+                    const auto Hashed = Hash::SHA256(Current);
 
-                    for (uint8_t i = 0; i < P1.size(); ++i)
-                        P2[i] ^= P1[i];
+                    if (Result.RAMSerial.empty())
+                        Result.RAMSerial.resize(Hashed.size());
 
-                    Result.RAMSerial = P2;
+                    for (uint8_t i = 0; i < Hashed.size(); ++i)
+                        Result.RAMSerial[i] ^= Hashed[i];
                 }
 
                 // Skip to next entry.
@@ -135,13 +135,10 @@ namespace HWID
         }
 
         // In-case we want to verify something.
-        if constexpr (Build::isDebug)
-        {
-            Infoprint(va("UUID: %s", Result.UUID.c_str()));
-            Infoprint(va("Caseserial: %s", Result.Caseserial.c_str()));
-            Infoprint(va("MOBOSerial: %s", Result.MOBOSerial.c_str()));
-            Infoprint(va("RAMSerial: %s", Encoding::toHexstringU(Result.RAMSerial).c_str()));
-        }
+        Debugprint(va("UUID: %s", Result.UUID.c_str()));
+        Debugprint(va("Caseserial: %s", Result.Caseserial.c_str()));
+        Debugprint(va("MOBOSerial: %s", Result.MOBOSerial.c_str()));
+        Debugprint(va("RAMSerial: %s", Encoding::toHexstringU(Result.RAMSerial).c_str()));
 
         return Result;
     }
@@ -236,15 +233,14 @@ namespace HWID
         const auto Result = cmp::Array_t<uint8_t, 6>{ cmp::getBytes(RWData) };
 
         // Notify the developer.
-        if constexpr (Build::isDebug) if (!Result.empty())
-            Infoprint(va("ARP: %s", Encoding::toHexstringU(Result).c_str()));
+        Debugprint(va("ARP: %s", Encoding::toHexstringU(Result).c_str()));
 
         CloseHandle(Handle);
         return Encoding::toHexstringU(Result);
     }
 
     // Get the primary volume's information.
-    struct Diskinfo_t { std::string Serial, UUID; bool Full() { return !Serial.empty() && !UUID.empty(); } };
+    struct Diskinfo_t { std::string Serial, UUID; bool Full() const { return !Serial.empty() && !UUID.empty(); } };
     inline Diskinfo_t getDiskinfo()
     {
         // Different types of disks, not going to bother detecting the actual type.
@@ -401,9 +397,227 @@ namespace HWID
         if (!Result.Full()) SCSI(Handle, Result);
         if (!Result.Full()) SMART(Handle, Result);
 
+        // In-case we want to verify something.
         Debugprint(va("Diskinfo: %s - %s", Result.UUID.c_str(), Result.Serial.c_str()));
+
         CloseHandle(Handle);
         return Result;
 
+    }
+
+    // Get the CPU model.
+    struct CPUinfo_t { uint32_t Versioninfo; union { char Vendor[13]; int RAW[4]; }; };
+    inline CPUinfo_t getCPUinfo()
+    {
+        int VendorID[4]{}; __cpuid(VendorID, 0);
+        int CPUID[4]{}; __cpuid(CPUID, 1);
+
+        return CPUinfo_t
+        {
+            .Versioninfo = std::bit_cast<uint32_t>(CPUID[0]),
+            .RAW = { VendorID[1], VendorID[3], VendorID[2] }
+        };
+    }
+
+    // TPM 1.2 requires authorization, so this will only work on TPM 2.0+
+    inline std::optional<std::vector<uint8_t>> getTPMEK()
+    {
+        // NOTE(tcn): For Socket mode, prefix the command with { uint32_t Command = 8, uint8_t Locality = 0, uint32_t Payloadsize = sizeof(Command) }
+        uint8_t Command[14] =
+        {
+            0x80, 0x01,             // TPM_ST_NO_SESSIONS
+            0x00, 0x00, 0x00, 0x0E, // commandSize
+            0x00, 0x00, 0x01, 0x73, // TPM_CC_ReadPublic
+            0x40, 0x00, 0x00, 0x0B  // TPM_RH_ENDORSEMENT
+        };
+
+        // Expected response is 512 bytes.
+        DWORD Responsesize = 1024;
+        uint8_t Response[1024]{};
+
+        const auto Handle = CreateFileW(L"\\??\\TPM", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (INVALID_HANDLE_VALUE == Handle) return {};
+
+        const auto Failed = DeviceIoControl(Handle, 0x22C00CU, Command, sizeof(Command), Response, Responsesize, &Responsesize, nullptr);
+        if (Failed || Responsesize < 10 || *(uint32_t *)&Response[8] != NULL) { CloseHandle(Handle); return {}; }
+
+        // ECC key.
+        if (*(uint16_t *)&Response[16] == 0x23)
+        {
+            const auto S1 = *(uint16_t *)&Response[112];
+            const auto S2 = *(uint16_t *)&Response[146];
+            std::vector<uint8_t> Result(S1 + S2);
+
+            for (int i = 0; i < S1; ++i)
+                Result[i] = Response[114 + i];
+
+            for (int i = 0; i < S2; ++i)
+                Result[i + S1] = Response[148 + i];
+
+            CloseHandle(Handle);
+            return Result;
+        }
+        else
+        {
+            const auto Size = *(uint16_t *)&Response[112];
+            std::vector<uint8_t> Result(Size);
+
+            for (int i = 0; i < Size; ++i)
+                Result[i] = Response[114 + i];
+
+            CloseHandle(Handle);
+            return Result;
+        }
+    }
+
+    // Modern GPUs tend to have a unique ID.
+    inline std::string getNVIDIA()
+    {
+        D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME Adapter{};
+        std::wcscpy(Adapter.DeviceName, L"\\\\.\\DISPLAY1");
+        D3DKMTOpenAdapterFromGdiDisplayName(&Adapter);
+
+        // Shouldn't happen..
+        if (Adapter.hAdapter == 0)
+            return {};
+
+        // WDDM's equivalent of DeviceIoControl.
+        const auto Driverescape = [Adapter](void *Data, UINT Size) -> bool
+        {
+            D3DKMT_ESCAPE Escape{ Adapter.hAdapter, NULL, D3DKMT_ESCAPE_DRIVERPRIVATE };
+            Escape.PrivateDriverDataSize = Size;
+            Escape.pPrivateDriverData = Data;
+
+            return 0 == D3DKMTEscape(&Escape);
+        };
+
+        // Not really documented. Check nvml.dll for a basic outline of UMD <-> KMD communication.
+        const auto NvidiaCMD = [Driverescape](uint32_t CommandID, uint32_t Devicehandle, uint32_t Objecthandle, uint32_t Param1, uint32_t Param2, uint32_t Param3, std::span<uint32_t> InOut)
+        {
+            struct NVIDIA_HDR
+            {
+                // Common header.
+                uint32_t VendorTag = 'NVDA';
+                uint32_t Version = 0x10002;         // 1.2
+                uint32_t Commandsize;               // Including header.
+                uint32_t CallerTag = 'NV**';
+
+                // Escape part.
+                uint32_t CommandID;                 // Set << 24 | ID
+                uint32_t Unknown[6];                // Not relevant for us.
+                uint32_t Completed = 0;             // Result, > 0 if successful.
+
+                // Arguments.
+                uint32_t Devicehandle;
+                uint32_t Objecthandle;
+                union
+                {
+                    struct
+                    {
+                        uint32_t Destination;
+                        uint32_t Objecttype;
+                        uint32_t Resultsize;        // + 4 bytes for the result code.
+                    } Type_2A;
+                    struct
+                    {
+                        uint32_t Subcommand;
+                        uint32_t Resultsize;
+                    } Type_2B;
+                };
+            };
+
+            // Buffer is updated by the driver call, so need to be contigious.
+            const uint32_t Commandsize = sizeof(NVIDIA_HDR) + (InOut.size() * sizeof(uint32_t));
+            const auto Buffer = (uint8_t *)alloca(Commandsize);
+            const auto Header = (NVIDIA_HDR *)Buffer;
+            std::memset(Buffer, 0, Commandsize);
+            *Header = NVIDIA_HDR{};
+
+            // If there's no object, assume it's to the device.
+            if (Objecthandle == NULL) Objecthandle = Devicehandle;
+
+            Header->CommandID = CommandID;
+            Header->Commandsize = Commandsize;
+            Header->Devicehandle = Devicehandle;
+            Header->Objecthandle = Objecthandle;
+
+            // Parameters are command dependant.
+            if (CommandID == 0x500002A)
+            {
+                Header->Type_2A.Destination = Param1;
+                Header->Type_2A.Objecttype = Param2;
+                Header->Type_2A.Resultsize = Param3 - 4;
+            }
+            if (CommandID == 0x500002B)
+            {
+                Header->Type_2B.Subcommand = Param1;
+                Header->Type_2B.Resultsize = Param2;
+            }
+
+            // NOTE(tcn): The buffer starts with input, but for our commands they are NULL.
+            // std::memcpy(Buffer + sizeof(NVIDIA_HDR), InOut.data(), InOut.size() * sizeof(uint32_t));
+
+            const auto Success = Driverescape(Buffer, Commandsize);
+            if (Success) std::memcpy(InOut.data(), Buffer + sizeof(NVIDIA_HDR), InOut.size() * sizeof(uint32_t));
+
+            return Success;
+        };
+
+        // Get a handle to the primary GPU.
+        const auto Devicehandle = [NvidiaCMD]()
+        {
+            uint32_t Response[2]{};
+
+            const auto Success = NvidiaCMD(0x500002A, NULL, NULL, 0, 0x41, sizeof(Response), Response);
+
+            const auto Errorcode = Response[0];
+            const auto Devicehandle = Response[1];
+
+            if (!Success || Errorcode != NULL) return 0U;
+            else return Devicehandle;
+        }();
+
+        // Invalid handle =(
+        if (Devicehandle == NULL)
+            return {};
+
+        // Internal allocations and configuration.
+        {
+            uint32_t Response[15]{};
+            NvidiaCMD(0x500002A, Devicehandle, NULL, 0xA55A0000, 0x80, sizeof(Response), Response);
+        }
+        {
+            uint32_t Response[2]{};
+            NvidiaCMD(0x500002A, Devicehandle, 0xA55A0000, 0xA55A0010, 0x2080, sizeof(Response), Response);
+        }
+
+        uint32_t Response[67]{};
+        const auto Success = NvidiaCMD(0x500002B, Devicehandle, 0xA55A0010, 0x2080014A, sizeof(Response), NULL, Response);
+
+        const auto Errorcode = Response[0];
+        const auto Length = Response[2];
+
+        if (!Success || Errorcode != NULL || Length == NULL)
+            return {};
+
+        return std::string((const char *)&Response[3], Length);
+    }
+    inline std::string getAMD()
+    {
+        /*
+            NOTE(tcn):
+            The consumer GPUs do not have an 'official' ID, but they do contain ASCI serials for QA/verification.
+            These are available in physical memory and are architecture dependant. I docummented the general idea
+            in /Research/AMD.md but you still need a driver for MMIO on Windows.
+        */
+
+        return {};
+    }
+    inline std::optional<std::string> getGPU()
+    {
+        const auto NVIDIA = getNVIDIA();
+        if (!NVIDIA.empty()) return NVIDIA;
+
+        return std::nullopt;
     }
 }
