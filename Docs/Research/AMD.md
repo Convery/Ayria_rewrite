@@ -1,16 +1,190 @@
-## AMD related research
-AMDs software division has always been lacking, so there's barely any doccumented information relating to their SDKs.
-Even their own developers (e.g. ROCm) seem to ask for features that already exist, and are used by some OEMs.
-So here's some research after spending a week on poking at their drivers and SDKs. You may notice inconsistencies with
-naming, spelling, etc., these are intentional to reflect what you'll find in the SDKs and binaries.
+# AMD related research
+The public documentation for AMDs software, at least the subset available to the public, has always been lacking.
+At times, even their own developers (e.g. ROCm) are wishing for features that already exist for OEM partners.
+So here's an overview of a weeks worth of research into AMD's drivers and SDKs, and where to find specifics for your
+usecase.
 
+## Consumer GPU UUID
+AMD only provides an official UUID for their enterprise GPUs, and seemingly only for Vega10+. 
+The [Linux source code](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/amd/pm/powerplay/hwmgr/vega10_hwmgr.c#L509)
+shows how to fetch the official one on Vega10.
+All architectures do however provide between 32 and 128 bits of identification for ASIC verification/SLT/QA.
+These IDs are part of the EFuse configuration and can either be read directly or queried via SMU.
+Some older cards even initialize the VBIOS with a serial-number (search for a `SN` tag) on startup.
 
-### ADL/ADL2/ADLX - SDK
-AMDs primary SDKs for interacting with the devices. They are mostly abstractions on top of eachother and result in a
-`ADL(2)_Send` or `ADL(2)_SendX2` call. These are then transformed and passed to the driver via WDDMs `D3DKMTEscape`.
-The best source of information on the commands and structures are the C# Dll's `atidemgy.dll` and `ADL.Foundation.dll`.
+The best source for architecture-specific information are `atitool` (Linux, archived on Github) 
+and `agt.exe` (Windows, included with MSI Live Update 6).
 
-```c++
+For this research I aquired a cheap R9 380, which builds on the Tonga architecture and provides 128-bits formated as such:
+```cpp
+// EFuse bits 368-417 
+constexpr uint64_t Tonga_ASIC = 0x00;
+
+// EFuse bits 506-548
+constexpr uint64_t Tonga_ASICEX = 0x00;
+
+// Most architectures have at least some of the same properties.
+struct Tonga_UUID
+{
+    char Lot[7];
+    uint8_t WaferID;
+    uint8_t Die_posX;
+    uint8_t Die_posY;
+    uint8_t Foundry;
+    uint8_t Fab;
+    uint8_t Year;
+    uint8_t Week;
+
+    Tonga_UUID(uint64_t ASIC, uint64_t ASICEX)
+    {
+        WaferID = (ASIC >> 32) & 0x1F;
+        Die_posX = (ASIC >> 37) & 0xFF;
+        Die_posY = (ASICEX >> 0) & 0xFF;
+        Foundry = (ASICEX >> 9) & 0x1F;
+        Fab = (ASICEX >> 14) & 0x3F;
+        Year = (ASICEX >> 20) & 0x0F;
+        Week = (ASICEX >> 24) & 0x3F;
+
+        int Index = 0;
+        while (ASIC)
+        {
+            const auto Rem = ASIC % 0x25;
+            ASIC /= 0x25;
+
+            if (Rem == 0) Lot[Index++] = ' ';
+            else if (Rem > 0x1A) Lot[Index++] = char(Rem + 0x15);
+            else Lot[Index++] = char(Rem + 0x40);
+        }
+        Lot[Index] = 0;
+    }
+};
+```
+
+Keep in mind that SMU/MMIO requires access to physical memory and thus you'll need a driver on Windows. 
+AMD does not provide anything in their (official) drivers for doing this so you need your own.
+If curious, here's an outline of how to fetch the UUID on Windows:
+
+<details>
+    <summary>Windows Example</summary>
+
+```cpp
+// uint32_t ReadPhysical(void *Address);
+// void WritePhysical(void *Address, uint32_t Data);
+
+#pragma pack(push, 1)
+struct PCIAlloc_t { uint64_t Baseaddress; uint16_t Segment; 
+                    uint8_t FirstBus, LastBus; uint32_t RESERVED; };
+#pragma pack (pop)
+
+// Find the PCIe configuration-space.
+std::vector<PCIAlloc_t> getAllocations()
+{
+    // Get the MCFG table from ACPI.
+    const auto Size = GetSystemFirmwareTable('ACPI', 'GFCM', nullptr, 0);
+    if (Size == 0) return {};
+
+    const auto Buffer = static_cast<uint8_t *>(alloca(Size));
+    GetSystemFirmwareTable('ACPI', 'GFCM', Buffer, Size);
+
+    const auto Allocations = (Size - 44) / sizeof(PCIAlloc_t);
+    std::vector<PCIAlloc_t> Result(Allocations);
+
+    for (size_t i = 0; i < Allocations; ++i)
+        Result[i] = *(Allocation_t *)(Buffer + 44 + sizeof(PCIAlloc_t) * i);
+
+    return Result;
+}
+
+// Scan for an AMD device, you should also check class-type.
+struct BDF_t { uint8_t Bus, Device, Function; };
+std::optional<BDF_t> findAMD(const PCIAlloc_t &Allocation)
+{
+    constexpr uint32 VendorID = 0x1002;   // ATI, AMD still uses it.
+
+    for (int Bus = Allocation.FirstBus; Bus <= Allocation.LastBus; Bus++)
+    {
+        // Might also want to check function.
+        for (int Device = 0; Device < 32; ++Device)
+        {
+            const auto Address = Allocation.Baseaddress + (Bus << 20) | (Device << 15);
+            const auto Vendordev = ReadPhysical((void *)Address);
+            if ((Vendordev & 0xFFFF) == VendorID)
+                return BDF_t{ Bus, Device, 0 };
+        }
+    }
+
+    return {};
+}
+
+// Parse the PCI BARs to get the registers (both for reading and SMU).
+uint64_t getRegisterbase(const PCIAlloc_t &Allocation, const BDF_t &BDF)
+{
+    const auto Address = Allocation.Baseaddress + (BDF.Bus << 20) | (BDF.Device << 15) | (BDF.Function << 12);
+    std::array<uint32_t, 6> BAR{};
+
+    // PCI BaseAddressRegister
+    for (int i = 0; i < 6; ++i)
+        BAR[i] = ReadPhysical((void *)(Address + 0x10 + i * sizeof(uint32_t)));
+
+    // AMD offers 3 addresses, showing how to get all for the future.
+    uint64_t Reg = 0, Mem = 0, IO = 0;
+
+    // Bit 4 is set to indicate 64-bit addresses.
+    if (!(BAR[5] & 4)) Reg = BAR[5] & 0xFFFFFFF0;
+    else Reg = (BAR[5] & 0xFFFFFFF0) + (uint64_t(BAR[3]) << 32U);
+
+    if (!(BAR[0] & 4)) Reg = BAR[0] & 0xFFFFFFF0;
+    else Reg = (BAR[0] & 0xFFFFFFF0) + (uint64_t(BAR[1]) << 32U);
+
+    // The leftover BAR.
+    if (BAR[0] & 4) IO = BAR[4] & 0xFF00;
+    else IO = BAR[1] & 0xFF00;
+
+    return Reg;
+}
+
+uint32_t ReadSMU(uint64_t Registerbase, size_t First_bit, size_t Last_bit)
+{
+    // For Bonaire, Hawaii, Tonga
+    constexpr uint32_t SMU_IN = 130;
+    constexpr uint32_t SMU_OUT = 131;
+
+    const auto Reg1 = 4 * (First_bit / 32) - 0x3FF00000;
+    const auto Reg2 = 4 * (Last_bit / 32) - 0x3FF00000;
+
+    PhysicalWrite(Registerbase + (4 * SMU_IN), Reg1);
+    const auto Part1 = PhysicalRead(Registerbase + (4 * SMU_OUT));
+
+    PhysicalWrite(Registerbase + (4 * SMU_IN), Reg2);
+    const auto Part2 = PhysicalRead(Registerbase + (4 * SMU_OUT));
+
+    // Assemble the bits you want into a DWORD.
+}
+
+Tonga_UUID getTonga(uint64_t Registerbase)
+{
+    auto A = ReadSMU(Registerbase, 368, 399);
+    auto B = ReadSMU(Registerbase, 400, 417);
+    uint64_t ASIC = A | ((B & 0x3FFFF) << 32U);
+
+    auto C = ReadSMU(Registerbase, 506, 537);
+    auto D = ReadSMU(Registerbase, 538, 548);
+    uint64_t ASICEX = C | ((B & 0x3FF) << 32U);
+
+    return Tonga_UUID(ASIC, ASICEX);
+}
+```
+</details>
+
+### ADL/ADL2/ADLX - Public SDK
+AMD has over the years released quite a few SDKs for interacting with the GPU. They generally just
+add wrappers around the original ADL library (`atiadlxx.dll`/`atiadlxy.dll`) and result in a call to
+`ADL(2)_Send` or `ADL(2)_SendX2`. 
+
+<details>
+    <summary>ADL Send-structs</summary>
+
+```cpp
 int ADL_Send(ADLChannelPacket *Packet);
 int ADL_SendX2(ADLChannelPacketX2 *Packet);
 int ADL2_Send(void *Context, ADLChannelPacket *Packet);
@@ -40,10 +214,16 @@ struct ADLChannelPacketX2
     uint32_t DeviceHandle;
 };
 ```
+</details>
 
-### CWWDE/CWDDE - Legacy protocol.
-As mentioned above, AMD/ATI likes to build on existing tools. So the header for ADL input should be a CWDDE header.
-```C++
+The `_Send` functions then forwards the message to the displaydriver via `ExtEscape` (XP) or `D3DKMTEscape` (Vista+).
+Keeping with AMDs habbit of wrapping older APIs/protocols the data sent should begin with the (`CWWDE/CWDDE`) header
+from the ATI days.
+
+<details>
+  <summary>CWDDE example</summary>
+
+```cpp
 struct CWDDECMD_t
 {
     uint32_t Totalsize;     // Including the header.
@@ -51,11 +231,7 @@ struct CWDDECMD_t
     uint32_t AdapterIndex;
     uint32_t Result;        // Used in composed commands.
 };
-```
-<details>
-  <summary>Example usage</summary>
 
-```c++
 int32_t getMemoryclock()
 {
     struct CIASICID_t
@@ -77,7 +253,7 @@ int32_t getMemoryclock()
       uint16_t usMClockMhz;
       uint16_t usCpPm4UcodeFeatureVersion;
       uint16_t usPadding;
-      int ulPadding[2];
+      uint32_t ulPadding[2];
     } Output{ sizeof(CIASICID_t) };
     
     constexpr uint32_t CWDDECI_GETASICID = 4194563U;
@@ -92,13 +268,15 @@ int32_t getMemoryclock()
 ```
 </details>
 
+Further information about the escape IDs, and the structures can be found in the C# Dll's `atidemgy.dll` and `ADL.Foundation.dll`.
 
 ### WDDM - Windows Display Driver Model
-Since Vista, communication with the driver is done via a `D3DKMTEscape` call rather than `ExtEscape`. They are
-pretty similar, just that WDDM lets the vendor define a header. Which means that for AMD we get yet another layer
-of wrappers. 
+With Vista, communication with the display-driver is done via a `D3DKMTEscape` call rather than `ExtEscape`. They are
+pretty similar, just that WDDM lets the vendor define a header and the buffer is used for both input and output. 
+Which means that for AMD we get yet another layer of wrappers. 
+So if you don't want to include ADL as a dependency, an example of how to format the message `D3DKMTEscape` is provided.
 
-```c++
+```cpp
 struct WDDM_t
 {
     uint32_t Vendortag = 2;                 // "The second vendor"
@@ -116,7 +294,7 @@ struct CSEL_t
     uint32_t Magic = 'CSEL';                // NULL to disable CSEL usage.
 };
 
-// Used for escapes.
+// Used for all escapes.
 struct ATI_t
 {
     uint32_t Headersize = sizeof(ATI_t);
@@ -127,13 +305,12 @@ struct ATI_t
     CSEL_t CSEL;                            // Device-selection.
     uint32_t Unknown[24];                   // Irrelevant to us.
 };
-
 ```
 
 <details>
-  <summary>WDDM usage</summary>
+  <summary>WDDM example</summary>
 
-```c++
+```cpp
 constexpr bool Skipheader(uint32_t EscapeID)
 {
     const auto TopW = (EscapeID & 0xFFFF0000) >> 16;
@@ -216,172 +393,3 @@ std::vector<uint8_t> D3DCall(const CWDDECMD_t *Command, std::span<const std::byt
 }
 ```
 </details>
-
-### Consumer UUID
-AMD only provides an official UUID for their enterprise GPUs, and only for Vega10+. There is however another ID used
-for QA that specifies information about the ASIC. The problem: these IDs are only available via MMIO and I've not found
-any official AMD drivers that implement this feature. The information itself is stored in the EFuse configuration which
-is either initialized on startup or queried via SMU depending on the GPU architecture. 
-The best source for information are `atitool` (Linux, archived on Github) and `agt.exe` (Windows, included with MSI Live Update 6).
-
-Depending on the architecture, EFuse provides up to 128-bits of information. The encoding is architecture dependant,
-so I'll just include an example for Tonga as I found a cheap R9 380. Other architectures may have less bits and 
-some seem to write a Serialnumber into their VBIOS (search for a `SN` tag).
-
-For more information about SMU IO, check the [Linux source](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/amd/pm/powerplay/smumgr/smumgr.c)
-
-```c++
-// EFuse bits 368-417 
-constexpr uint64_t Tonga_ASIC = 0x00;
-
-// EFuse bits 506-548
-constexpr uint64_t Tonga_ASICEX = 0x00;
-
-// Most architectures have at least some of the same properties.
-struct Tonga_UUID
-{
-    char Lot[7];
-    uint8_t WaferID;
-    uint8_t Die_posX;
-    uint8_t Die_posY;
-    uint8_t Foundry;
-    uint8_t Fab;
-    uint8_t Year;
-    uint8_t Week;
-
-    Tonga_UUID(uint64_t ASIC, uint64_t ASICEX)
-    {
-        WaferID = (ASIC >> 32) & 0x1F;
-        Die_posX = (ASIC >> 37) & 0xFF;
-        Die_posY = (ASICEX >> 0) & 0xFF;
-        Foundry = (ASICEX >> 9) & 0x1F;
-        Fab = (ASICEX >> 14) & 0x3F;
-        Year = (ASICEX >> 20) & 0x0F;
-        Week = (ASICEX >> 24) & 0x3F;
-
-        int Index = 0;
-        while (ASIC)
-        {
-            const auto Rem = ASIC % 0x25;
-            ASIC /= 0x25;
-
-            if (Rem == 0) Lot[Index++] = ' ';
-            else if (Rem > 0x1A) Lot[Index++] = char(Rem + 0x15);
-            else Lot[Index++] = char(Rem + 0x40);
-        }
-        Lot[Index] = 0;
-    }
-};
-```
-
-APU architectures seem to have a similar method using SMN registers. Supported by `Starship`, `Fireflight`, and `Raven`.
-
-<details>
-    <summary>More complete Windows example</summary>
-
-```c++
-// uint32_t ReadPhysical(void *Address);
-// void WritePhysical(void *Address, uint32_t Data);
-
-#pragma pack(push, 1)
-struct PCIAlloc_t { uint64_t Baseaddress; uint16_t Segment; uint8_t FirstBus, LastBus; uint32_t RESERVED; };
-#pragma pack (pop)
-
-std::vector<PCIAlloc_t> getAllocations()
-{
-    // Get the MCFG table from ACPI.
-    const auto Size = GetSystemFirmwareTable('ACPI', 'GFCM', nullptr, 0);
-    if (Size == 0) return {};
-
-    const auto Buffer = static_cast<uint8_t *>(alloca(Size));
-    GetSystemFirmwareTable('ACPI', 'GFCM', Buffer, Size);
-
-    const auto Allocations = (Size - 44) / sizeof(PCIAlloc_t);
-    std::vector<PCIAlloc_t> Result(Allocations);
-
-    for (size_t i = 0; i < Allocations; ++i)
-        Result[i] = *(Allocation_t *)(Buffer + 44 + sizeof(PCIAlloc_t) * i);
-
-    return Result;
-}
-
-struct BDF_t { uint8_t Bus, Device, Function; };
-std::optional<BDF_t> findAMD(const PCIAlloc_t &Allocation)
-{
-    constexpr uint32 VendorID = 0x1002;   // ATI, AMD still uses it.
-
-    for (int Bus = Allocation.FirstBus; Bus <= Allocation.LastBus; Bus++)
-    {
-        for (int Device = 0; Device < 32; ++Device)
-        {
-            const auto Address = Allocation.Baseaddress + (Bus << 20) | (Device << 15);
-            const auto Vendordev = ReadPhysical((void *)Address);
-            if ((Vendordev & 0xFFFF) == VendorID)
-                return BDF_t{ Bus, Device, 0 };
-        }
-    }
-
-    return {};
-}
-
-uint64_t getRegisterbase(const PCIAlloc_t &Allocation, const BDF_t &BDF)
-{
-    const auto Address = Allocation.Baseaddress + (BDF.Bus << 20) | (BDF.Device << 15) | (BDF.Function << 12);
-    std::array<uint32_t, 6> BAR{};
-    
-    // PCI BaseAddressRegister
-    for (int i = 0; i < 6; ++i)
-        BAR[i] = ReadPhysical((void *)(Address + 0x10 + i * sizeof(uint32_t)));
-
-    // AMD offers 3 addresses, showing how to get all for the future.
-    uint64_t Reg = 0, Mem = 0, IO = 0;
-
-    // Bit 4 is set to indicate 64-bit addresses.
-    if (!(BAR[5] & 4)) Reg = BAR[5] & 0xFFFFFFF0;
-    else Reg = (BAR[5] & 0xFFFFFFF0) + (uint64_t(BAR[3]) << 32U);
-
-    if (!(BAR[0] & 4)) Reg = BAR[0] & 0xFFFFFFF0;
-    else Reg = (BAR[0] & 0xFFFFFFF0) + (uint64_t(BAR[1]) << 32U);
-
-    // The leftover BAR.
-    if (BAR[0] & 4) IO = BAR[4] & 0xFF00;
-    else IO = BAR[1] & 0xFF00;
-
-    return Reg;
-}
-
-uint32_t ReadSMU(uint64_t Registerbase, size_t First_bit, size_t Last_bit)
-{
-    const auto A = std::floor(First_bit * 0.03125);
-    const auto B = std::floor(Last_bit * 0.03125) - A;
-
-    // For Bonaire, Hawaii, Tonga
-    constexpr uint32_t SMU_IN = 130;
-    constexpr uint32_t SMU_OUT = 131;
-
-    for (int i = 0; i < B; ++i)
-    {
-        const auto Offset = 4 * (i + A) - 0x3FF00000;  
-
-        PhysicalWrite(Registerbase + (4 * SMU_IN), Offset);
-        auto Part = PhysicalRead(Registerbase + (4 * SMU_OUT));
-    }
-
-    // Assemble the DWORD..
-}
-
-Tonga_UUID getTonga(uint64_t Registerbase)
-{
-    auto A = ReadSMU(Registerbase, 368, 399);
-    auto B = ReadSMU(Registerbase, 400, 417);
-    uint64_t ASIC = A | ((B & 0x3FFFF) << 32U);
-
-    auto C = ReadSMU(Registerbase, 506, 537);
-    auto D = ReadSMU(Registerbase, 538, 548);
-    uint64_t ASICEX = C | ((B & 0x3FF) << 32U);
-
-    return Tonga_UUID(ASIC, ASICEX);
-}
-```
-</details>
-
