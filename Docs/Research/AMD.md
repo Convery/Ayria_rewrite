@@ -13,7 +13,7 @@ AMD only provides an official UUID for their enterprise GPUs, and seemingly only
 The [Linux source code](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/amd/pm/powerplay/hwmgr/vega10_hwmgr.c#L509)
 shows how to fetch the official one on Vega10.
 All architectures do however provide between 32 and 128 bits of identification for ASIC verification/SLT/QA.
-These IDs are part of the EFuse configuration and can either be read directly or queried via SMU.
+These IDs are part of the EFuse configuration and can either be read directly (MM) or queried via SMU.
 Some older cards even initialize the VBIOS with a serial-number (search for a `SN` tag) on startup.
 
 The best source for architecture-specific information are `atitool` (Linux, archived on Github) 
@@ -69,7 +69,7 @@ AMD does not provide anything in their (official) drivers for doing this so you 
 If curious, here's an outline of how to fetch the UUID on Windows:
 
 <details>
-    <summary>Windows Example</summary>
+    <summary>Windows Tonga Example</summary>
 
 ```cpp
 // uint32_t ReadPhysical(void *Address);
@@ -130,10 +130,10 @@ uint64_t getRegisterbase(const PCIAlloc_t &Allocation, const BDF_t &BDF)
     for (int i = 0; i < 6; ++i)
         BAR[i] = ReadPhysical((void *)(Address + 0x10 + i * sizeof(uint32_t)));
 
-    // AMD offers 3 addresses, showing how to get all for the future.
+    // AMD offers 3 addresses, showing how to get all for posterity.
     uint64_t Reg = 0, Mem = 0, IO = 0;
 
-    // Bit 4 is set to indicate 64-bit addresses.
+    // Bit 2 is set to indicate 64-bit addresses.
     if (!(BAR[5] & 4)) Reg = BAR[5] & 0xFFFFFFF0;
     else Reg = (BAR[5] & 0xFFFFFFF0) + (uint64_t(BAR[3]) << 32U);
 
@@ -147,20 +147,31 @@ uint64_t getRegisterbase(const PCIAlloc_t &Allocation, const BDF_t &BDF)
     return Reg;
 }
 
-uint32_t ReadSMU(uint64_t Registerbase, size_t First_bit, size_t Last_bit)
+// Extracted so to cover other register-values.
+uint32_t ReadMM(uint64_t Registerbase, int32_t Register)
+{
+    return PhysicalRead(Registerbase + (4 * Register));
+}
+void WriteMM(uint64_t Registerbase, int32_t Register, uint32_t Value)
+{
+    PhysicalWrite(Registerbase + (4 * Register), Value);
+}
+
+// Tonga specific.
+uint32_t Tonga_ReadSMU(uint64_t Registerbase, size_t First_bit, size_t Last_bit)
 {
     // For Bonaire, Hawaii, Tonga
     constexpr uint32_t SMU_IN = 130;
     constexpr uint32_t SMU_OUT = 131;
 
-    const auto Reg1 = 4 * (First_bit / 32) - 0x3FF00000;
-    const auto Reg2 = 4 * (Last_bit / 32) - 0x3FF00000;
+    const auto Offset1 = 4 * (First_bit / 32) - 0x3FF00000;
+    const auto Offset2 = 4 * (Last_bit / 32) - 0x3FF00000;
 
-    PhysicalWrite(Registerbase + (4 * SMU_IN), Reg1);
-    const auto Part1 = PhysicalRead(Registerbase + (4 * SMU_OUT));
+    WriteMM(Registerbase, SMU_IN, Offset1);
+    const auto Part1 = ReadMM(Registerbase, SMU_OUT);
 
-    PhysicalWrite(Registerbase + (4 * SMU_IN), Reg2);
-    const auto Part2 = PhysicalRead(Registerbase + (4 * SMU_OUT));
+    WriteMM(Registerbase, SMU_IN, Offset2);
+    const auto Part2 = ReadMM(Registerbase, SMU_OUT);
 
     // Assemble the bits you want into a DWORD.
 }
@@ -177,6 +188,45 @@ Tonga_UUID getTonga(uint64_t Registerbase)
 
     return Tonga_UUID(ASIC, ASICEX);
 }
+```
+</details>
+
+As shown in the Linux code, Vega10 uses SMU to get the official ID. The unofficial ID is directly read via MM.
+Both are 64-bit, so if you have one of those cards, please compare the IDs. Unofficial ID:
+<details>
+    <summary>Vega10 version</summary>
+
+```cpp
+void getVega10(uint64_t Registerbase)
+{
+    const auto Efuse = 0x17400;
+
+    auto A = ReadMM(Registerbase, Efuse + 1);
+    auto B = ReadMM(Registerbase, Efuse + 2);
+    uint64_t ASIC = A | (B << 32U);
+
+    uint8_t WaferID  = (ASIC >> 17) & 0x1F;
+    uint8_t Die_posX  = (ASIC >> 11) & 0x3F;
+    uint8_t Die_posY  = (ASIC >> 5) & 0x3F;
+    uint8_t Fab  = (ASIC >> 0) & 0x1F;
+
+    char Lot[7];
+    ASIC >>= 22;
+    ASIC &= 0xFFFFFFFF;
+
+    int Index = 0;
+    while (ASIC)
+    {
+        const auto Rem = ASIC % 0x25;
+        ASIC /= 0x25;
+    
+        if (Rem == 0) Lot[Index++] = ' ';
+        else if (Rem > 0x1A) Lot[Index++] = char(Rem + 0x15);
+        else Lot[Index++] = char(Rem + 0x40);
+    }
+    Lot[Index] = 0;
+}
+
 ```
 </details>
 
