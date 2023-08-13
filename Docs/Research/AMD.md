@@ -2,7 +2,11 @@
 The public documentation for AMDs software, at least the subset available to the public, has always been lacking.
 At times, even their own developers (e.g. ROCm) are wishing for features that already exist for OEM partners.
 So here's an overview of a weeks worth of research into AMD's drivers and SDKs, and where to find specifics for your
-usecase.
+usecase. 
+
+As a sidenote if you wish to further research this: do not rely on naming being consistent. 
+AMD's RTTI, comments, and SDKs have a lot of typos and different names are used for the same functionallity, often
+for no obvious reason (e.g. versioning).
 
 ## Consumer GPU UUID
 AMD only provides an official UUID for their enterprise GPUs, and seemingly only for Vega10+. 
