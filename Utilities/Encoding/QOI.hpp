@@ -4,8 +4,7 @@
     License: MIT
 
     Quite OK Image Format (https://qoiformat.org)
-	Modified to ignore the stream-termination token and use ARGB.
-	Changed magic from 'qoif' to 'fioq' for clarity.
+	Modified to ignore the stream-termination token.
 */
 
 #pragma once
@@ -19,7 +18,7 @@ namespace QOI
         uint32_t Magic;
         uint32_t Width;
         uint32_t Height;
-		uint8_t Channels;	// 3 = RGB, 4 = ARGB
+		uint8_t Channels;	// 3 = RGB, 4 = RGBA
         uint8_t Colorspace;	// 0 = sRGB, 1 = linear
     };
     #pragma pack (pop)
@@ -46,12 +45,12 @@ namespace QOI
 
 	union Pixel_t
 	{
-		struct { uint8_t A, R, G, B; };
+		struct { uint8_t R, G, B, A; };
 		uint32_t RAW;
 	};
 	constexpr uint8_t Hash(const Pixel_t &Pixel)
 	{
-		return ((Pixel.A * 3) + (Pixel.R * 5) + (Pixel.G * 7) + (Pixel.B * 11)) & 63;
+		return ((Pixel.R * 3) + (Pixel.G * 5) + (Pixel.B * 7) + (Pixel.A * 11)) & 63;
 	}
 
 	// Compiletime decode.
@@ -144,7 +143,7 @@ namespace QOI
 
 		assert(Header.Channels <= 4 && Header.Channels >= 3);
 		assert(Header.Width && Header.Width);
-		assert(Header.Magic == 'fioq');
+		assert(Header.Magic == 'qoif');
 
 		Blob_t Result(Decodesize(Header), {});
 
@@ -229,7 +228,7 @@ namespace QOI
 		assert(Description.Colorspace <= 1);
 
 		// Ensure that the description contains the identifier.
-		Description.Magic = 'fioq';
+		Description.Magic = 'qoif';
 
 		Blob_t Result((uint8_t *)&Description, sizeof(Header_t));
 		Pixel_t Previous{ .A = 0xFF };
@@ -311,7 +310,6 @@ namespace QOI
 						Result.push_back(Current.A);
 					}
 				}
-
 			}
 
 			Previous = Current;
