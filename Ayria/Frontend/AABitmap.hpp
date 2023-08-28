@@ -28,7 +28,7 @@ namespace Rendering
         }
         uint8_t *getPixels() const
         {
-            if (!Decodedimage) 
+            if (!Decodedimage)
             {
                 const auto Totalsize = QOI::Decodesize(*Header) + sizeof(Header);
                 Decodedimage = std::make_unique<Blob_t>(QOI::Decode(Blob_view_t((uint8_t *)Header, Totalsize)));
@@ -36,7 +36,7 @@ namespace Rendering
 
             return Decodedimage->data();
         }
-    };    
+    };
 
     // Stored as [Header][Palette][Pixels]
     struct Palettebitmap_t
@@ -112,9 +112,22 @@ namespace Rendering
             uint16_t RESERVED : 3{};        // Padding.
         };
 
-        Realizedbitmap_t(const Palettebitmap_t *Bitmap) {}
-        Realizedbitmap_t(const QOIBitmap_t *Bitmap) {}
+        Realizedbitmap_t(const Palettebitmap_t *Bitmap) : Header(Bitmap)
+        {
+            Width = Header->Width; Height = Header->Height;
+            Palettecount = Header->Palettecount;
+            Colorformat = Header->Colorformat;
+            isAnimated = Header->isAnimated;
+            RESERVED = Header->RESERVED;
+        }
+        Realizedbitmap_t(const QOIBitmap_t *Bitmap) : Header(Bitmap)
+        {
+            Width = Header->Header->Width;
+            Height = Header->Header->Height;
+            Colorformat = Header->Header->Channels == 3 ? Colorformat_t::R8G8B8 : Colorformat_t::R8G8B8A8;
+        }
         Realizedbitmap_t(std::string_view Filepath) {}
+        Realizedbitmap_t() = default;
 
         virtual void Animatepalette(int8_t Offset) {}
     };

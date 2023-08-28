@@ -2,8 +2,6 @@
     Initial author: Convery (tcn@ayria.se)
     Started: 2023-08-26
     License: MIT
-
-    Windows bitmaps are based on OS/2, so 24-bit BPP requires BGR and draws bottom-up.    
 */
 
 #pragma once
@@ -11,7 +9,7 @@
 
 // There's no universally preferred format for colors.
 // Web-devs and OpenGL seem to prefer RGBA while DirectX prefer ARGB.
-struct ARGB_t 
+struct ARGB_t
 {
     uint8_t A, R, G, B;
     ARGB_t() = default;
