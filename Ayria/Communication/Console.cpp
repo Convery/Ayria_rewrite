@@ -51,7 +51,7 @@ namespace Communication::Console
                     return 0x00315571;
                 }();
 
-                Consolelog.emplace_back(Line, Newcolor);
+                Consolelog.emplace_back(std::u8string(Line.data(), Line.size()), Newcolor);
             }
         }
         else
@@ -59,7 +59,7 @@ namespace Communication::Console
             std::scoped_lock Threadguard(Writelock);
             for (const auto &Line : Lines)
             {
-                Consolelog.emplace_back(Line, Color);
+                Consolelog.emplace_back(std::u8string(Line.data(), Line.size()), Color);
             }
         }
 
