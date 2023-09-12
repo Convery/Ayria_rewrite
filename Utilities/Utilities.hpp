@@ -36,6 +36,7 @@
 #include <memory>
 #include <memory_resource>
 #include <mutex>
+#include <numbers>
 #include <set>
 #include <sstream>
 #include <string>
@@ -82,13 +83,6 @@ using namespace std::literals;
 #include "Crypto/qDSA.hpp"
 #include "Crypto/SHA.hpp"
 #include "Crypto/Tiger192.hpp"
-
-//#include "Graphics/Renderer.hpp"
-#include "Graphics/AAColor.hpp"
-#include "Graphics/AAFont.hpp"
-#include "Graphics/AAImage.hpp"
-#include "Graphics/Composition.hpp"
-#include "Graphics/Renderer.hpp"
 
 #include "Encoding/Base58.hpp"
 #include "Encoding/Base64.hpp"

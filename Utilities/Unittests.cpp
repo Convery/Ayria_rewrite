@@ -7,7 +7,6 @@
 */
 
 #include <Utilities/Utilities.hpp>
-#include <numbers>
 
 int main()
 {
@@ -263,16 +262,16 @@ int main()
     // Containers/Ringbuffer.hpp
     [[maybe_unused]] const auto Ringbuffertest = []() -> bool
     {
-        std::array<int, 6> Rangetest{};
+        // 3 element capacity.
         Ringbuffer_t<int, 3> Buffer;
+        std::array<int, 6> Rangetest{};
 
-        // Insert 4 elements, overflows.
+        // Insert 4 elements, evicts the oldest.
         Buffer.emplace_back(1);
         Buffer.emplace_back(2);
         Buffer.push_back(3);
         Buffer.push_back(4);
 
-        // Overwrote the last element, size still 3.
         if (4 != Buffer.front() || 2 != Buffer.back() || 3 != Buffer.size())
             printf("BROKEN: Ringbuffer core\n");
 
@@ -319,16 +318,16 @@ int main()
         constexpr auto i32 = 256;
 
         constexpr double A[] = {
-            (double)cmp::log(fPI), (double)cmp::log(fE), (double)cmp::log((double)i32),
-            (double)cmp::exp(fPI), (double)cmp::exp(fE), (double)cmp::exp((double)i32),
-            (double)cmp::pow(fPI, 2), (double)cmp::pow(fE, 2), (double)cmp::pow((double)i32, 2),
-            (double)cmp::pow(fPI, 2.2), (double)cmp::pow(fE, 2.2), (double)cmp::pow((double)i32, 2.2)
+            cmp::log(fPI), cmp::log(fE), cmp::log((double)i32),
+            cmp::exp(fPI), cmp::exp(fE), cmp::exp((double)i32),
+            cmp::pow(fPI, 2), cmp::pow(fE, 2), cmp::pow((double)i32, 2),
+            cmp::pow(fPI, 2.2), cmp::pow(fE, 2.2), cmp::pow((double)i32, 2.2)
         };
         const double B[] = {
-            (double)std::log(fPI), (double)std::log(fE), (double)std::log(i32),
-            (double)std::exp(fPI), (double)std::exp(fE), (double)std::exp(i32),
-            (double)std::pow(fPI, 2), (double)std::pow(fE, 2), (double)std::pow(i32, 2),
-            (double)std::pow(fPI, 2.2), (double)std::pow(fE, 2.2), (double)std::pow(i32, 2.2)
+            std::log(fPI), std::log(fE), std::log(i32),
+            std::exp(fPI), std::exp(fE), std::exp(i32),
+            std::pow(fPI, 2), std::pow(fE, 2), std::pow(i32, 2),
+            std::pow(fPI, 2.2), std::pow(fE, 2.2), std::pow(i32, 2.2)
         };
 
         for (size_t i = 0; i < 12; ++i)

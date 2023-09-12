@@ -19,7 +19,7 @@
 #include <stdfloat>
 #endif
 
-// Generic datatype for dynamic arrays, std::byte lead to bad codegen on msvc.
+// Generic datatype for dynamic arrays, std::byte leads to bad codegen on MSVC.
 using Blob_view_t = std::basic_string_view<uint8_t>;
 using Blob_t = std::basic_string<uint8_t>;
 
@@ -229,10 +229,12 @@ template <typename T> struct vec2_t
     constexpr bool operator>=(const vec2_t &Right) const { return (x >= Right.x) || (y >= Right.y); }
 
     constexpr vec2_t &operator*=(const T &Right) { x *= Right; y *= Right; return *this; }
+    constexpr vec2_t &operator/=(const T &Right) { x /= Right; y /= Right; return *this; }
     constexpr vec2_t &operator+=(const vec2_t &Right) { x += Right.x; y += Right.y; return *this; }
     constexpr vec2_t &operator-=(const vec2_t &Right) { x -= Right.x; y -= Right.y; return *this; }
 
     constexpr friend vec2_t operator*(vec2_t Left, const T &Right) { Left *= Right; return Left; }
+    constexpr friend vec2_t operator/(vec2_t Left, const T &Right) { Left /= Right; return Left; }
     constexpr friend vec2_t operator+(vec2_t Left, const vec2_t &Right) { Left += Right; return Left; }
     constexpr friend vec2_t operator-(vec2_t Left, const vec2_t &Right) { Left -= Right; return Left; }
 };
