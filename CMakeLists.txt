@@ -44,10 +44,10 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 
     # Windows compilation.
     if(CMAKE_BUILD_TYPE MATCHES Release OR CMAKE_BUILD_TYPE MATCHES RelWithDebInfo)
-        set(EXTRA_CMPFLAGS "${EXTRA_CMPFLAGS} /Zc:__cplusplus /permissive- /EHc-s- /Oiysyb3 /GF /Gy /Gw /GR- /GL /utf-8 /Brepro /fp:except- /Zc:throwingNew")
+        set(EXTRA_CMPFLAGS "${EXTRA_CMPFLAGS} /Zc:__cplusplus /permissive- /EHc-s- /Oiysyb3 /GF /Gy /Gw /GL /GR- /utf-8 /Brepro /fp:except- /Zc:throwingNew")
         set(EXTRA_LNKFLAGS "${EXTRA_LNKFLAGS} /time /LTCG /debug:full /opt:ref /opt:icf=8 /opt:lbr /incremental:no /Brepro /cgthreads:8")
     else()
-        set(EXTRA_CMPFLAGS "${EXTRA_CMPFLAGS} /Zc:__cplusplus /permissive- /EHc-s- /Gy /utf-8 /fp:except- /Zc:throwingNew /fsanitize=address") # /d2TPReport /openmp:llvm /arch:AVX
+        set(EXTRA_CMPFLAGS "${EXTRA_CMPFLAGS} /Zc:__cplusplus /permissive- /EHc-s- /Gy /GR- /utf-8 /fp:except- /Zc:throwingNew") # /fsanitize=address /d2TPReport /openmp:llvm /arch:AVX
         set(EXTRA_LNKFLAGS "${EXTRA_LNKFLAGS} /time /LTCG /debug:full /opt:ref /opt:lbr /incremental:no /cgthreads:8")
     endif()
 
@@ -62,11 +62,11 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
             CMAKE_C_FLAGS   CMAKE_C_FLAGS_DEBUG   CMAKE_C_FLAGS_RELEASE   CMAKE_C_FLAGS_RELWITHDEBINFO)
         string(REGEX REPLACE "/W[0-4]" "/W4" ${Flag} "${${Flag}}")
         string(REPLACE "/EHsc" "/EHc-s-" ${Flag} "${${Flag}}")
-        string(REPLACE "/GR " "/GR- " ${Flag} "${${Flag}}")
         string(REPLACE "/Zi " "/Z7 " ${Flag} "${${Flag}}")
         string(REPLACE "/Ob2" "/Ob3" ${Flag} "${${Flag}}")
         string(REPLACE "/Ob1" "/Ob3" ${Flag} "${${Flag}}")
         string(REPLACE "/MD" "/MT" ${Flag} "${${Flag}}")
+        string(REPLACE "/GR " "/GR- " ${Flag} "${${Flag}}")
     endforeach()
 else()
     # Assume GNU-GCC/CLANG.

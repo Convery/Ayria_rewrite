@@ -71,6 +71,9 @@ namespace Logging { template <typename T> extern void Print(char Prefix, const T
 #define Errorprint(string) Logging::Print('E', string)
 #define Infoprint(string) Logging::Print('I', string)
 
+// Asserts should indicate an unreachable state.
+#define ASSERT(x) { assert(x); if (!Build::isDebug && !(x)) std::unreachable(); }
+
 // Where to keep the logs.
 #if !defined (LOG_PATH)
     #define LOG_PATH "./Ayria/Logs"
