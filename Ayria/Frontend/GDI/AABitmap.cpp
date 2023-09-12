@@ -9,10 +9,7 @@
 #include <Utilities/Utilities.hpp>
 #include "../Rendering.hpp"
 
-// If there's no other renderer defined, e.g. pure software.
-#if defined (_WIN32) && !defined (HAS_RENDERER)
-#define HAS_RENDERER
-
+#if defined (_WIN32)
 namespace Rendering
 {
     // Windows SDK doesn't export this anymore..
@@ -20,57 +17,132 @@ namespace Rendering
     constexpr auto DIB_PAL_INDICES = 2;
     #endif
 
-    // For portability, we store the image as a DIB.
-    struct GDIBitmap_t : Realizedbitmap_t
+    // Framebuffers can generally be greatly improved by platform specific implementations.
+    std::pair<Handle_t, uint8_t *> Createframebuffer(uint16_t Width, uint16_t Height, Colorformat_t Pixelformat)
+    {
+        const auto Devicecontext = CreateCompatibleDC(nullptr);
+        const auto Masks = getColormasks(Pixelformat);
+        void *Buffer{};
+
+        // Deduce the number of bits per pixel.
+        const auto BPP = [Pixelformat]()
+        {
+            switch (Pixelformat)
+            {
+                using enum Colorformat_t;
+
+                case B8G8R8A8:
+                case R8G8B8A8:
+                case A8R8G8B8:
+                case A8B8G8R8:
+                    return 32;
+
+                case B8G8R8:
+                case R8G8B8:
+                    return 24;
+
+                case B5G6R5:
+                case B5G5R5:
+                case R5G6B5:
+                case R5G5B5:
+                    return 16;
+
+                case PALETTE8: return 8;
+                case PALETTE4: return 4;
+
+                case MONOCHROME:
+                case BINARY:
+                case MASK:
+                    return 1;
+
+                default:
+                    ASSERT(false);
+                    return 1;
+            }
+        }();
+
+        // Bitfields are not supported for 24-BPP bitmaps in Windows.
+        const auto BMP = BITMAPV4HEADER{ sizeof(BITMAPV4HEADER), Width, -(Height), 1, WORD(BPP), DWORD(BI_BITFIELDS * (BPP > 8 && BPP != 24)), 0, 0, 0, 0, 0, Masks[0], Masks[1], Masks[2], Masks[3] };
+        const auto DIB = CreateDIBSection(Devicecontext, (BITMAPINFO * const)&BMP, DIB_PAL_INDICES * (BPP > 1 && BPP <= 8), &Buffer, nullptr, 0);
+
+        // Usually unnecessary on modern systems..
+        GdiFlush();
+
+        DeleteDC(Devicecontext);
+        return { DIB, (uint8_t *)Buffer };
+    }
+    Handle_t Createbitmap(uint16_t Width, uint16_t Height, Colorformat_t Pixelformat, const uint8_t *Pixeldata)
+    {
+        const auto Devicecontext = GetDC(nullptr);
+        const auto Masks = getColormasks(Pixelformat);
+
+        // Deduce the number of bits per pixel.
+        const auto BPP = [Pixelformat]()
+        {
+            switch (Pixelformat)
+            {
+                using enum Colorformat_t;
+
+                case B8G8R8A8:
+                case R8G8B8A8:
+                case A8R8G8B8:
+                case A8B8G8R8:
+                    return 32;
+
+                case B8G8R8:
+                case R8G8B8:
+                    return 24;
+
+                case B5G6R5:
+                case B5G5R5:
+                case R5G6B5:
+                case R5G5B5:
+                    return 16;
+
+                case PALETTE8: return 8;
+                case PALETTE4: return 4;
+
+                case MONOCHROME:
+                case BINARY:
+                case MASK:
+                    return 1;
+
+                default:
+                    ASSERT(false);
+                    return 1;
+            }
+        }();
+
+        // Bitfields are not supported for 24-BPP bitmaps in Windows.
+        const auto BMP = BITMAPV4HEADER{ sizeof(BITMAPV4HEADER), Width, -(Height), 1, WORD(BPP), DWORD(BI_BITFIELDS * (BPP > 8 && BPP != 24)), 0, 0, 0, 0, 0, Masks[0], Masks[1], Masks[2], Masks[3] };
+
+        Handle_t Handle;
+        if (!Pixeldata) Handle = CreateDIBSection(Devicecontext, (BITMAPINFO * const)&BMP, DIB_PAL_INDICES * (BPP > 1 && BPP <= 8), nullptr, nullptr, 0);
+        else Handle = CreateDIBitmap(Devicecontext, (BITMAPINFOHEADER * const)&BMP, CBM_INIT, Pixeldata, (BITMAPINFO * const)&BMP, DIB_PAL_INDICES * (BPP > 1 && BPP <= 8));
+
+        DeleteDC(Devicecontext);
+        return Handle;
+    }
+
+    // As we already export the bitmap creation, we mainly just do parsing and palette-animation here.
+    struct GDIBitmap_t final : Realizedbitmap_t
     {
         HPALETTE Palette{};
-        HBITMAP DIB{};
 
-        // NOTE(tcn): QOI supports sRGB so we may want to check the channel and convert as needed.
-        GDIBitmap_t(const QOIBitmap_t *Bitmap) : Realizedbitmap_t(Bitmap)
+        GDIBitmap_t(const Bitmapheader_t &Info, Handle_t Surface) : Realizedbitmap_t(Info, Surface)
         {
-            // NOTE(tcn): If the API changes to pass around a context rather than DIB, optimize this.
-            const auto Devicecontext = CreateCompatibleDC(nullptr);
-
-            // Bitmapinfo sometimes needs to have bitfields (masks for where to find R, G, B).
-            const auto BMP = (BITMAPINFO *)alloca(sizeof(BITMAPINFOHEADER) + 3 * sizeof(RGBQUAD));
-            const auto Masks = getColormasks(Colorformat);
-            const auto Pixels = Bitmap->getPixels();
-            const auto BPP = Bitmap->getBPP();
-            void *Buffer{};
-
-            // Bitmasks are ignored for 24-BPP.
-            BMP->bmiHeader = BITMAPINFOHEADER{ sizeof(BITMAPINFOHEADER), Width, -(Height), 1, BPP, DWORD(BI_BITFIELDS * (BPP > 8 && BPP != 24)) };
-            BMP->bmiColors[0] = std::bit_cast<RGBQUAD>(Masks[0]); BMP->bmiColors[1] = std::bit_cast<RGBQUAD>(Masks[1]); BMP->bmiColors[2] = std::bit_cast<RGBQUAD>(Masks[2]);
-
-            // If <= 8BPP the 'pixels' are indicies into the palette, else it's RGB (masked).
-            DIB = CreateDIBSection(Devicecontext, BMP, DIB_PAL_INDICES * (BPP <= 8), &Buffer, NULL, NULL);
-
-            // 24-BPP does not support colormasks, so we'd need to convert to B8G8R8.
-            if (BPP == 24 && Colorformat != Colorformat_t::B8G8R8)
-            {
-                for (uint32_t i = 0; i < (Width * Height); ++i)
-                {
-                    auto Temp = ((const RGBTRIPLE *)Pixels)[i];
-                    std::swap(Temp.rgbtRed, Temp.rgbtBlue);
-                    ((RGBTRIPLE *)Buffer)[i] = Temp;
-                }
-            }
-            else
-            {
-                std::memcpy(Buffer, Pixels, (Width * Height * BPP) / 8);
-            }
-
-            DeleteDC(Devicecontext);
+            if (Palettecount) Palette = (HPALETTE)GetCurrentObject(HDC(Surface), OBJ_PAL);
         }
         GDIBitmap_t(const Palettebitmap_t *Bitmap) : Realizedbitmap_t(Bitmap)
         {
-            // NOTE(tcn): If the API changes to pass around a context rather than DIB, optimize this.
             const auto Devicecontext = CreateCompatibleDC(nullptr);
+            const auto Pixels = Bitmap->getPixels();
+            const auto BPP = Bitmap->getBPP();
 
-            // Assume that the user prefers this function over QOI for good reason.
+            // Initialize the palette as needed.
             if (Palettecount)
             {
+                // Over-allocate so that we can re-use the first entry.
                 const auto LOGPalette = (LOGPALETTE *)alloca(sizeof(PALETTEENTRY) * (Palettecount + 1));
                 LOGPalette->palNumEntries = Palettecount;
                 LOGPalette->palVersion = 0x300;
@@ -85,9 +157,9 @@ namespace Rendering
                     for (size_t i = 0; i < Palettecount; ++i)
                     {
                         const auto Pixel = Bitmap->getPalette()[i];
-                        LOGPalette->palPalEntry[i] = { BYTE(Pixel & Masks[0] >> Shifts[0]),
-                                                       BYTE(Pixel & Masks[1] >> Shifts[1]),
-                                                       BYTE(Pixel & Masks[2] >> Shifts[2]),
+                        LOGPalette->palPalEntry[i] = { BYTE((Pixel & Masks[0]) >> Shifts[0]),
+                                                       BYTE((Pixel & Masks[1]) >> Shifts[1]),
+                                                       BYTE((Pixel & Masks[2]) >> Shifts[2]),
                                                        BYTE(isAnimated) };
                     }
                 }
@@ -101,62 +173,124 @@ namespace Rendering
                 }
 
                 Palette = CreatePalette(LOGPalette);
+                SelectPalette(Devicecontext, Palette, FALSE);
             }
 
-            // Bitmapinfo sometimes needs to have bitfields (masks for where to find R, G, B).
-            const auto BMP = (BITMAPINFO *)alloca(sizeof(BITMAPINFOHEADER) + 3 * sizeof(RGBQUAD));
-            const auto Masks = getColormasks(Colorformat);
-            const auto Pixels = Bitmap->getPixels();
-            const auto BPP = Bitmap->getBPP();
-            void *Buffer{};
-
-            // Bitmasks are ignored for 24-BPP.
-            BMP->bmiHeader = BITMAPINFOHEADER{ sizeof(BITMAPINFOHEADER), Width, -(Height), 1, BPP, DWORD(BI_BITFIELDS * (BPP > 8 && BPP != 24)) };
-            BMP->bmiColors[0] = std::bit_cast<RGBQUAD>(Masks[0]); BMP->bmiColors[1] = std::bit_cast<RGBQUAD>(Masks[1]); BMP->bmiColors[2] = std::bit_cast<RGBQUAD>(Masks[2]);
-
-            // If <= 8BPP the 'pixels' are indicies into the palette, else it's RGB (masked).
-            DIB = CreateDIBSection(Devicecontext, BMP, DIB_PAL_INDICES * (BPP <= 8), &Buffer, NULL, NULL);
-
-            // 24-BPP does not support colormasks, so we'd need to convert to B8G8R8.
+            // If the color-format isn't natively supported by GDI..
             if (BPP == 24 && Colorformat != Colorformat_t::B8G8R8)
             {
-                for (uint32_t i = 0; i < (Width * Height); ++i)
+                const auto Buffer = std::make_unique<RGBTRIPLE[]>(Width * Height);
+                const auto Source = (RGBTRIPLE *)Pixels;
+
+                for (size_t i = 0; i < (Width * Height); ++i)
                 {
-                    auto Temp = ((const RGBTRIPLE *)Pixels)[i];
+                    auto Temp = Source[i];
                     std::swap(Temp.rgbtRed, Temp.rgbtBlue);
-                    ((RGBTRIPLE *)Buffer)[i] = Temp;
+                    Buffer[i] = Temp;
                 }
+
+                // GDI is internally refcounted, so deletes are deferred.
+                const auto BMP = Createbitmap(Width, Height, Colorformat_t::B8G8R8, (uint8_t *)Buffer.get());
+                SelectObject(Devicecontext, BMP);
+                DeleteBitmap(BMP);
             }
             else
             {
-                std::memcpy(Buffer, Pixels, (Width * Height * BPP) / 8);
+                Handle_t BMP;
+
+                if (Palettecount && Palettecount <= 16) BMP = Createbitmap(Width, Height, Colorformat_t::PALETTE4, Pixels);
+                else if (Palettecount) BMP = Createbitmap(Width, Height, Colorformat_t::PALETTE8, Pixels);
+                else BMP = Createbitmap(Width, Height, Colorformat_t(Colorformat), Pixels);
+
+                // GDI is internally refcounted, so deletes are deferred.
+                SelectObject(Devicecontext, BMP);
+                DeleteBitmap(BMP);
             }
 
-            DeleteDC(Devicecontext);
+            // Alias the Handle_t.
+            Surface = Devicecontext;
         }
-        GDIBitmap_t(std::string_view Filepath) : Realizedbitmap_t(Bitmap) {}
-
-        virtual void Animatepalette(int8_t Offset)
+        GDIBitmap_t(QOIBitmap_t *Bitmap) : Realizedbitmap_t(Bitmap)
         {
-            assert(isAnimated);
+            const auto Devicecontext = CreateCompatibleDC(nullptr);
+            const auto Pixels = Bitmap->getPixels();
+            const auto BPP = Bitmap->getBPP();
+
+            // If the color-format isn't natively supported by GDI.
+            if (BPP == 24 && Colorformat != Colorformat_t::B8G8R8)
+            {
+                const auto Buffer = std::make_unique<RGBTRIPLE[]>(Width * Height);
+                const auto Source = (RGBTRIPLE *)Pixels;
+
+                for (size_t i = 0; i < (Width * Height); ++i)
+                {
+                    auto Temp = Source[i];
+                    std::swap(Temp.rgbtRed, Temp.rgbtBlue);
+                    Buffer[i] = Temp;
+                }
+
+                // GDI is internally refcounted, so deletes are deferred.
+                const auto BMP = Createbitmap(Width, Height, Colorformat_t::B8G8R8, (uint8_t *)Buffer.get());
+                SelectObject(Devicecontext, BMP);
+                DeleteBitmap(BMP);
+            }
+            else
+            {
+                // GDI is internally refcounted, so deletes are deferred.
+                const auto BMP = Createbitmap(Width, Height, Colorformat_t(Colorformat), Pixels);
+                SelectObject(Devicecontext, BMP);
+                DeleteBitmap(BMP);
+            }
+
+            // Alias the Handle_t.
+            Surface = Devicecontext;
+        }
+        GDIBitmap_t(std::string_view Filepath)
+        {
+            // TODO(tcn): See if we can get away without loading anything from disk.
+            assert(false);
+        }
+        GDIBitmap_t() = default;
+
+        // In some context, 'animation' means total replacing, for us it's just a rotation.
+        void Animatepalette(int8_t Offset) override
+        {
+            // NOTE(tcn): We might want to nullsub for !isAnimated instead..
+            ASSERT(isAnimated && Palettecount);
 
             // Maximum of 256 * 4 bytes.
-            const auto Count = GetPaletteEntries(Palette, 0, 0, nullptr);
-            const auto Entries = (PALETTEENTRY *)alloca(sizeof(PALETTEENTRY) * Count);
-            GetPaletteEntries(Palette, 0, Count, Entries);
+            const auto Entries = (PALETTEENTRY *)alloca(sizeof(PALETTEENTRY) * Palettecount);
+            GetPaletteEntries(Palette, 0, Palettecount, Entries);
 
             // Shift the palette and update.
-            std::rotate(Entries, Entries + Offset, Entries + Count);
-            AnimatePalette(Palette, 0, Count, Entries);
+            std::rotate(Entries, Entries + Offset, Entries + Palettecount);
+            AnimatePalette(Palette, 0, Palettecount, Entries);
+        }
+        void Copypalette(Handle_t Othercontext) override
+        {
+            if (Palette)
+            {
+                SelectPalette(HDC(Othercontext), Palette, FALSE);
+            }
+        }
+        ~GDIBitmap_t() override
+        {
+            // No-op if the values are null.
+            DeletePalette(Palette);
+            DeleteDC(HDC(Surface));
         }
     };
 
     // Wrappers.
+    std::unique_ptr<Realizedbitmap_t> Realize(const Bitmapheader_t &Info, Handle_t Surface)
+    {
+        return std::make_unique<GDIBitmap_t>(Info, Surface);
+    }
     std::unique_ptr<Realizedbitmap_t> Realize(const Palettebitmap_t *Bitmap)
     {
         return std::make_unique<GDIBitmap_t>(Bitmap);
     }
-    std::unique_ptr<Realizedbitmap_t> Realize(const QOIBitmap_t *Bitmap)
+    std::unique_ptr<Realizedbitmap_t> Realize(QOIBitmap_t *Bitmap)
     {
         return std::make_unique<GDIBitmap_t>(Bitmap);
     }
@@ -168,31 +302,26 @@ namespace Rendering
     // For when we don't want to embed anything, result resolution being Steps * 1.
     std::unique_ptr<Realizedbitmap_t> Creategradient(ARGB_t First, ARGB_t Last, size_t Steps, bool isAnimated, uint8_t Smoothfactor)
     {
-        assert(Steps && !(isAnimated && Steps > 256));
-
-        // NOTE(tcn): If the API changes to pass around a context rather than DIB, optimize this.
-        const auto Devicecontext = CreateCompatibleDC(nullptr);
+        ASSERT(Steps && !(isAnimated && Steps > 256));
 
         const ARGB_t Delta{ 0xFF, uint8_t((Last.R - First.R) / (Steps - 1)), uint8_t((Last.G - First.G) / (Steps - 1)), uint8_t((Last.B - First.B) / (Steps - 1)) };
-        const auto Colorformat = isAnimated ? Colorformat_t::R8G8B8A8 : Colorformat_t::B8G8R8;
+        const auto Colorformat = isAnimated ? (Steps <= 16 ? Colorformat_t::PALETTE4 : Colorformat_t::PALETTE8) : Colorformat_t::B8G8R8;
         const auto Palettecount = isAnimated * Steps;
-        void *Buffer{};
 
         GDIBitmap_t Bitmap{};
-        Bitmap.Palettecount = Steps * isAnimated;
+        Bitmap.Surface = CreateCompatibleDC(nullptr);
+        Bitmap.Colorformat = (uint16_t)Colorformat;
+        Bitmap.Palettecount = Palettecount;
         Bitmap.isAnimated = isAnimated;
-        Bitmap.Width = Steps;
+        Bitmap.Width = uint16_t(Steps);
         Bitmap.Height = 1;
 
-        // We could provide an option for creating as a non-animated palette, but pretty much all are animated in HHS.
+        // As each pixel (hopefully) represents a unique color, palettes are only useful for animations.
         if (isAnimated)
         {
-            const auto BMP = (BITMAPINFO *)alloca(sizeof(BITMAPINFOHEADER) + 3 * sizeof(RGBQUAD));
-            BMP->bmiHeader = BITMAPINFOHEADER{ sizeof(BITMAPINFOHEADER), Steps, -1, 1, 4 + 4 * (std::bit_width(Steps) > 4), BI_RGB };
-            Bitmap.DIB = CreateDIBSection(Devicecontext, BMP, DIB_PAL_INDICES * isAnimated, &Buffer, NULL, NULL);
-
+            // Over-allocate so that we can re-use the first entry.
             const auto LOGPalette = (LOGPALETTE *)alloca(sizeof(PALETTEENTRY) * (Palettecount + 1));
-            LOGPalette->palNumEntries = Palettecount;
+            LOGPalette->palNumEntries = WORD(Palettecount);
             LOGPalette->palVersion = 0x300;
 
             // Simple lerp.
@@ -201,9 +330,9 @@ namespace Rendering
                 for (size_t i = 0; i < Steps; ++i)
                 {
                     LOGPalette->palPalEntry[i] = {
-                        static_cast<uint8_t>(First.R + Index * Delta.R),
-                        static_cast<uint8_t>(First.G + Index * Delta.G),
-                        static_cast<uint8_t>(First.B + Index * Delta.B),
+                        static_cast<uint8_t>(First.R + i * Delta.R),
+                        static_cast<uint8_t>(First.G + i * Delta.G),
+                        static_cast<uint8_t>(First.B + i * Delta.B),
                         uint8_t(isAnimated)
                     };
                 }
@@ -212,54 +341,60 @@ namespace Rendering
             {
                 for (size_t i = 0; i < Steps; ++i)
                 {
-                    const auto Normalized = static_cast<float>(Index) / static_cast<float>(Steps - 1);
+                    const auto Normalized = static_cast<float>(i) / static_cast<float>(Steps - 1);
                     const auto X = Normalized * 2.0f - 1.0f;
-                    const auto F = [X, Order]() -> float
+                    const auto F = [X, Smoothfactor]() -> float
                     {
-                        if (Order == 1) return Blend::Smoothstep<1>(X);
-                        if (Order == 2) return Blend::Smoothstep<2>(X);
-                        if (Order == 3) return Blend::Smoothstep<3>(X);
-                        if (Order == 4) return Blend::Smoothstep<4>(X);
-                        if (Order == 5) return Blend::Smoothstep<5>(X);
-                        if (Order == 6) return Blend::Smoothstep<6>(X);
+                        if (Smoothfactor == 1) return Blend::Smoothstep<1>(X);
+                        if (Smoothfactor == 2) return Blend::Smoothstep<2>(X);
+                        if (Smoothfactor == 3) return Blend::Smoothstep<3>(X);
+                        if (Smoothfactor == 4) return Blend::Smoothstep<4>(X);
+                        if (Smoothfactor == 5) return Blend::Smoothstep<5>(X);
+                        if (Smoothfactor == 6) return Blend::Smoothstep<6>(X);
 
                         std::unreachable();
                     }();
 
                     LOGPalette->palPalEntry[i] = {
-                        static_cast<uint8_t>(First.R + Delta.R * Index + Delta.R * F),
-                        static_cast<uint8_t>(First.G + Delta.G * Index + Delta.G * F),
-                        static_cast<uint8_t>(First.B + Delta.B * Index + Delta.B * F),
+                        static_cast<uint8_t>(First.R + Delta.R * i + Delta.R * F),
+                        static_cast<uint8_t>(First.G + Delta.G * i + Delta.G * F),
+                        static_cast<uint8_t>(First.B + Delta.B * i + Delta.B * F),
                         uint8_t(isAnimated)
                     };
                 }
             }
 
             // Allocate the palette in system memory.
-            Bitmap.Palette = CreatePalette(LOGPalette);
+            const auto Palette = CreatePalette(LOGPalette);
+            SelectPalette((HDC)Bitmap.Surface, Palette, FALSE);
+            Bitmap.Palette = Palette;
 
             // GDI does not support 2-bits per pixel, and 1 is pretty useless for a gradient.
+            const auto Pixelbuffer = std::make_unique<uint8_t[]>(Steps >> uint8_t(Colorformat == Colorformat_t::PALETTE4));
             for (uint32_t i = 0; i < Steps; ++i)
             {
-                if (std::bit_width(Steps) > 4) ((uint8_t *)Buffer)[i] = uint8_t(i);
-                else ((uint8_t *)Buffer)[i / 2] |= uint8_t(i << (4 * !(i & 1)));
+                if (std::bit_width(Steps) > 4) Pixelbuffer[i] = uint8_t(i);
+                else Pixelbuffer[i / 2] |= uint8_t(i << (4 * !(i & 1)));
             }
+
+            // GDI is internally refcounted, so deletes are deferred.
+            const auto BMP = Createbitmap(uint16_t(Steps), 1, Colorformat, Pixelbuffer.get());
+            SelectObject(HDC(Bitmap.Surface), BMP);
+            DeleteBitmap(BMP);
         }
         else
         {
-            const auto BMP = (BITMAPINFO *)alloca(sizeof(BITMAPINFOHEADER) + 3 * sizeof(RGBQUAD));
-            BMP->bmiHeader = BITMAPINFOHEADER{ sizeof(BITMAPINFOHEADER), Steps, -1, 1, 24, BI_RGB };
-            Bitmap.DIB = CreateDIBSection(Devicecontext, BMP, DIB_RGB_COLORS, &Buffer, NULL, NULL);
+            const auto Pixelbuffer = std::make_unique<RGBTRIPLE[]>(Steps);
 
             // Simple lerp.
             if (Smoothfactor == 0)
             {
                 for (size_t i = 0; i < Steps; ++i)
                 {
-                    ((RGBTRIPLE *)Buffer)[i] = {
-                        static_cast<uint8_t>(First.B + Index * Delta.B),
-                        static_cast<uint8_t>(First.G + Index * Delta.G),
-                        static_cast<uint8_t>(First.R + Index * Delta.R)
+                    Pixelbuffer[i] = {
+                        static_cast<uint8_t>(First.B + i * Delta.B),
+                        static_cast<uint8_t>(First.G + i * Delta.G),
+                        static_cast<uint8_t>(First.R + i * Delta.R)
                     };
                 }
             }
@@ -267,36 +402,144 @@ namespace Rendering
             {
                 for (size_t i = 0; i < Steps; ++i)
                 {
-                    const auto Normalized = static_cast<float>(Index) / static_cast<float>(Steps - 1);
+                    const auto Normalized = static_cast<float>(i) / static_cast<float>(Steps - 1);
                     const auto X = Normalized * 2.0f - 1.0f;
-                    const auto F = [X, Order]() -> float
+                    const auto F = [X, Smoothfactor]() -> float
                     {
-                        if (Order == 1) return Blend::Smoothstep<1>(X);
-                        if (Order == 2) return Blend::Smoothstep<2>(X);
-                        if (Order == 3) return Blend::Smoothstep<3>(X);
-                        if (Order == 4) return Blend::Smoothstep<4>(X);
-                        if (Order == 5) return Blend::Smoothstep<5>(X);
-                        if (Order == 6) return Blend::Smoothstep<6>(X);
+                        if (Smoothfactor == 1) return Blend::Smoothstep<1>(X);
+                        if (Smoothfactor == 2) return Blend::Smoothstep<2>(X);
+                        if (Smoothfactor == 3) return Blend::Smoothstep<3>(X);
+                        if (Smoothfactor == 4) return Blend::Smoothstep<4>(X);
+                        if (Smoothfactor == 5) return Blend::Smoothstep<5>(X);
+                        if (Smoothfactor == 6) return Blend::Smoothstep<6>(X);
 
                         std::unreachable();
                     }();
 
-                    ((RGBTRIPLE *)Buffer)[i] = {
-                        static_cast<uint8_t>(First.B + Delta.B * Index + Delta.B * F),
-                        static_cast<uint8_t>(First.G + Delta.G * Index + Delta.G * F),
-                        static_cast<uint8_t>(First.R + Delta.R * Index + Delta.R * F)
+                    Pixelbuffer[i] = {
+                        static_cast<uint8_t>(First.B + Delta.B * i + Delta.B * F),
+                        static_cast<uint8_t>(First.G + Delta.G * i + Delta.G * F),
+                        static_cast<uint8_t>(First.R + Delta.R * i + Delta.R * F)
                     };
                 }
             }
+
+            // GDI is internally refcounted, so deletes are deferred.
+            const auto BMP = Createbitmap(uint16_t(Steps), 1, Colorformat, (uint8_t *)Pixelbuffer.get());
+            SelectObject(HDC(Bitmap.Surface), BMP);
+            DeleteBitmap(BMP);
         }
 
-        DeleteDC(Devicecontext);
-        return std::make_unique(Bitmap);
+        return std::make_unique<Realizedbitmap_t>(Bitmap);
     }
 
     // We generally don't use 32-BPP, so create a mask from an image for transparency.
-    // std::unique_ptr<Realizedbitmap_t> Createmask(const Atlasbitmap_t *Source, ARGB_t Backgroundcolor);
-    // std::unique_ptr<Realizedbitmap_t> Createmask(const Realizedbitmap_t *Source, ARGB_t Backgroundcolor);
-}
+    std::unique_ptr<Realizedbitmap_t> Createmask(const Atlasbitmap_t *Source, ARGB_t Backgroundcolor)
+    {
+        const auto MaskDC = CreateCompatibleDC((HDC)Source->Surface);
+        const auto Size = Source->Subset.cd - Source->Subset.ab;
+        const auto SourceDC = (HDC)Source->Surface;
 
+        const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
+        SelectObject(MaskDC, Mask);
+
+        // For a 32-BPP bitmap, we need to drop the alpha channel.
+        if (Source->getBPP() == 32) [[unlikely]]
+        {
+            const auto TempBMP = CreateBitmap(Size.x, Size.y, 1, 24, nullptr);
+            const auto TempDC = CreateCompatibleDC(nullptr);
+            SelectObject(TempDC, TempBMP);
+
+            // Reduce the color-space.
+            BitBlt(TempDC, 0, 0, Size.x, Size.y, SourceDC, Source->Subset.x, Source->Subset.y, SRCCOPY);
+
+            // Background becomes black, forground white.
+            SetBkColor(TempDC, COLORREF(Backgroundcolor));
+            SetTextColor(TempDC, RGB(0xFF, 0xFF, 0xFF));
+
+            // Create the mask by reducing to 1-BPP.
+            BitBlt(MaskDC, 0, 0, Size.x, Size.y, TempDC, 0, 0, SRCCOPY);
+
+            DeleteObject(TempBMP);
+            DeleteDC(TempDC);
+        }
+        else
+        {
+            // Background becomes black, forground white.
+            const auto BG = SetBkColor(SourceDC, COLORREF(Backgroundcolor));
+            const auto FG = SetTextColor(SourceDC, RGB(0xFF, 0xFF, 0xFF));
+
+            // Create the mask by reducing to 1-BPP.
+            BitBlt(MaskDC, 0, 0, Size.x, Size.y, SourceDC, Source->Subset.x, Source->Subset.y, SRCCOPY);
+
+            // Restore the colors.
+            SetBkColor(SourceDC, BG);
+            SetTextColor(SourceDC, FG);
+        }
+
+        GDIBitmap_t Bitmap{};
+        Bitmap.Colorformat = (uint16_t)Colorformat_t::MASK;
+        Bitmap.Surface = MaskDC;
+        Bitmap.Height = Size.y;
+        Bitmap.Width = Size.x;
+
+        // GDI is refcounted so this delete is deferred.
+        DeleteBitmap(Mask);
+
+        return std::make_unique<Realizedbitmap_t>(Bitmap);
+    }
+    std::unique_ptr<Realizedbitmap_t> Createmask(const Realizedbitmap_t *Source, ARGB_t Backgroundcolor)
+    {
+        const auto MaskDC = CreateCompatibleDC((HDC)Source->Surface);
+        const auto SourceDC = (HDC)Source->Surface;
+
+        const auto Mask = Createbitmap(Source->Width, Source->Height, Colorformat_t::MASK, nullptr);
+        SelectObject(MaskDC, Mask);
+
+        // For a 32-BPP bitmap, we need to drop the alpha channel.
+        if (Source->getBPP() == 32) [[unlikely]]
+        {
+            const auto TempBMP = CreateBitmap(Source->Width, Source->Height, 1, 24, nullptr);
+            const auto TempDC = CreateCompatibleDC(nullptr);
+            SelectObject(TempDC, TempBMP);
+
+            // Reduce the color-space.
+            BitBlt(TempDC, 0, 0, Source->Width, Source->Height, SourceDC, 0, 0, SRCCOPY);
+
+            // Background becomes black, forground white.
+            SetBkColor(TempDC, COLORREF(Backgroundcolor));
+            SetTextColor(TempDC, RGB(0xFF, 0xFF, 0xFF));
+
+            // Create the mask by reducing to 1-BPP.
+            BitBlt(MaskDC, 0, 0, Source->Width, Source->Height, TempDC, 0, 0, SRCCOPY);
+
+            DeleteObject(TempBMP);
+            DeleteDC(TempDC);
+        }
+        else
+        {
+            // Background becomes black, forground white.
+            const auto BG = SetBkColor(SourceDC, COLORREF(Backgroundcolor));
+            const auto FG = SetTextColor(SourceDC, RGB(0xFF, 0xFF, 0xFF));
+
+            // Create the mask by reducing to 1-BPP.
+            BitBlt(MaskDC, 0, 0, Source->Width, Source->Height, SourceDC, 0, 0, SRCCOPY);
+
+            // Restore the colors.
+            SetBkColor(SourceDC, BG);
+            SetTextColor(SourceDC, FG);
+        }
+
+        GDIBitmap_t Bitmap{};
+        Bitmap.Colorformat = (uint16_t)Colorformat_t::MASK;
+        Bitmap.Height = Source->Height;
+        Bitmap.Width = Source->Width;
+        Bitmap.Surface = MaskDC;
+
+        // GDI is refcounted so this delete is deferred.
+        DeleteBitmap(Mask);
+
+        return std::make_unique<Realizedbitmap_t>(Bitmap);
+    }
+}
 #endif

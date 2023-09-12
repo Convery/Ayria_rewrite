@@ -22,48 +22,57 @@
 
 namespace Rendering
 {
+    // No need to have a separate header for this.
+    extern Handle_t getFont(const std::string &Name, uint8_t Size);
+    extern void Registerfont(Blob_view_t Fontdata);
+    extern Handle_t getDefaultfont(uint8_t Size);
+
     // As we should never use a pure magenta, we can use it for 24-BPP transparency.
-    constexpr ARGB_t Clearcolor(0xFF, 0xFF, 0, 0xFF);
+    constexpr ARGB_t Clearcolor(0xFF, 0, 0xFF);
 
     // Forward declaration for what the renderers should support as a texture.
     using Texture_t = std::variant<std::monostate, ARGB_t,
                                    std::reference_wrapper<Atlasbitmap_t>,
                                    std::reference_wrapper<Realizedbitmap_t>>;
 
-    // For compatibility with earlier systems, a font can be referenced by name or handle.
-    using Font_t = std::variant<std::monostate, void *, std::string_view>;
+    // Framebuffers can generally be greatly improved by platform-specific implementations.
+    extern std::pair<Handle_t, uint8_t *> Createframebuffer(uint16_t Width, uint16_t Height, Colorformat_t Pixelformat);
+    extern Handle_t Createbitmap(uint16_t Width, uint16_t Height, Colorformat_t Pixelformat, const uint8_t *Pixeldata);
 
-    // Renderers provide their own AA strategy or a 2X downsample, coordinates are global.
-    template <bool DownscaleAA> struct Interface_t
+    // Renderers provide AA using a 2X downsample, coordinates are global.
+    struct Interface_t
     {
         // If no surface is provided, the renderer shall create its own to fit the viewport.
-        Interface_t(const vec4i &Viewport, void *Surface);
+        Interface_t(vec4i Viewport, Handle_t Surface) { ASSERT(false); }
+        virtual ~Interface_t() = default;
+        Interface_t() = default;
+
+        //
+        virtual void Present(Handle_t Surface) { ASSERT(false); }
 
         // Directly rendering to the internal surface (or parent).
-        void drawEllipse(vec2i Position, vec2i Size, const Texture_t &Fill);
-        void drawLine(vec2i Start, vec2i Stop, uint8_t Linewidth, const Texture_t &Texture);
-        void drawRectangle(vec2i Topleft, vec2i Bottomright, uint8_t Rounding, const Texture_t &Texture);
-        void drawEllipse(vec2i Position, vec2i Size, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline);
-        void drawArc(vec2i Position, vec2i Angles, uint8_t Rounding, uint8_t Linewidth, const Texture_t &Texture);
-        void drawRectangle(vec2i Topleft, vec2i Bottomright, uint8_t Rounding, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline);
+        virtual void drawEllipse(vec2i Position, vec2i Size, const Texture_t &Fill) { ASSERT(false); }
+        virtual void drawLine(vec2i Start, vec2i Stop, uint8_t Linewidth, const Texture_t &Texture) { ASSERT(false); }
+        virtual void drawRectangle(vec2i Topleft, vec2i Bottomright, uint8_t Rounding, const Texture_t &Texture) { ASSERT(false); }
+        virtual void drawArc(vec2i Centerpoint, vec2i Angles, uint8_t Radius, uint8_t Linewidth, const Texture_t &Texture) { ASSERT(false); }
+        virtual void drawEllipse(vec2i Position, vec2i Size, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline) { ASSERT(false); }
+        virtual void drawRectangle(vec2i Topleft, vec2i Bottomright, uint8_t Rounding, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline) { ASSERT(false); }
 
-        // For some backends; transparency can be slow, so try to provide a background if possible for a BitBlt.
-        void drawText(vec2i Position, Font_t Fonthandle, uint8_t Fontsize, std::wstring_view String, const Texture_t &Textcolor, const Texture_t &Background = std::monostate);
-        void drawText_centered(vec4i Boundingbox, Font_t Fonthandle, uint8_t Fontsize, std::wstring_view String, const Texture_t &Textcolor, const Texture_t &Background = std::monostate);
+        // For some backends; transparency can be slow, so try to provide a background if possible.
+        using Textoptions_t = struct { uint16_t Centered : 1, Justified : 1, Leftalign : 1, Rightalign : 1, Multiline : 1; };
+        virtual void drawText(vec2i Position, std::wstring_view String, const Texture_t &Stringtexture, uint8_t Fontsize, std::string_view Fontname = {}, const Texture_t &Backgroundtexture = {}, Textoptions_t Options = {}) { ASSERT(false); }
+        virtual void drawText(vec4i Boundingbox, std::wstring_view String, const Texture_t &Stringtexture, uint8_t Fontsize, std::string_view Fontname = {}, const Texture_t &Backgroundtexture = {}, Textoptions_t Options = {}) { ASSERT(false); }
 
         // Takes any contigious array for simplicity.
-        template <cmp::Sequential_t Range> requires (std::is_same_v<Range::value_type, vec2i>)
-        void drawPath(const Range<vec2i> &Points, uint8_t Linewidth, const Texture_t &Texture);
-        template <cmp::Sequential_t Range> requires (std::is_same_v<Range::value_type, vec2i>)
-        void drawPolygon(const Range<vec2i> &Points, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline);
+        virtual void drawPath(std::span<const vec2i> Points, uint8_t Linewidth, const Texture_t &Texture) { ASSERT(false); }
+        virtual void drawPolygon(std::span<const vec2i> Points, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline) { ASSERT(false); }
 
         // Images can also be used for drawing gradients and other such background textures.
-        void drawImage(vec2i Position, vec2i Size, const Texture_t &Image);
-        void drawImage_tiled(vec2i Imagesize, vec4i Destionation, const Texture_t &Image);
-        void drawImage_stretched(vec2i Imagesize, vec4i Destionation, const Texture_t &Image);
+        virtual void drawImage_stretched(vec4i Destionation, const Texture_t &Image) { ASSERT(false); }
+        virtual void drawImage_tiled(vec4i Destionation, const Texture_t &Image) { ASSERT(false); }
+        virtual void drawImage(vec2i Position, const Texture_t &Image) { ASSERT(false); }
     };
 
     // Implemented in a subdirectory.
-    extern Interface_t<false> *Createrenderer(const vec4i &Viewport, void *Surface);
-    extern Interface_t<true> *CreaterendererAA(const vec4i &Viewport, void *Surface);
+    extern std::unique_ptr<Interface_t> Createrenderer(const vec4i &Viewport, Handle_t Surface);
 }

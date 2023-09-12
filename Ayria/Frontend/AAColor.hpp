@@ -7,6 +7,9 @@
 #pragma once
 #include <Utilities/Utilities.hpp>
 
+// Acceptable error.
+constexpr float inv255 = static_cast<float>(1.0 / 255.0);
+
 // There's no universally preferred format for colors.
 // Web-devs and OpenGL seem to prefer RGBA while DirectX prefer ARGB.
 struct ARGB_t
@@ -15,12 +18,13 @@ struct ARGB_t
     ARGB_t() = default;
 
     // Colors are usually convertible to uint32_t..
-    template <typename T> explicit ARGB_t(uint32_t Packed) noexcept requires (std::is_same_v<std::decay_t<T>, uint32_t>)
+    template <typename T> explicit constexpr ARGB_t(uint32_t Packed) noexcept requires (std::is_same_v<std::decay_t<T>, uint32_t>)
     {
         *this = std::bit_cast<ARGB_t>(Packed);
     }
-    explicit ARGB_t(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFF) : A(a), R(r), G(g), B(b){}
-    explicit operator uint32_t() const noexcept
+    constexpr ARGB_t(uint8_t a, uint8_t r, uint8_t g, uint8_t b) : A(a), R(r), G(g), B(b){}
+    constexpr ARGB_t(uint8_t r, uint8_t g, uint8_t b) : A(0xFF), R(r), G(g), B(b){}
+    explicit constexpr operator uint32_t() const noexcept
     {
         return std::bit_cast<uint32_t>(*this);
     }
@@ -41,11 +45,8 @@ struct sARGB_t
     uint8_t A, R, G, B;
     sARGB_t() = default;
 
-    // Acceptable error.
-    constexpr auto inv255 = static_cast<float>(1.0 / 255.0);
-
-    explicit sARGB_t(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFF) noexcept : A(a), R(r), G(g), B(b){}
-    explicit sARGB_t(const ARGB_t &Linear) noexcept
+    explicit constexpr sARGB_t(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFF) noexcept : A(a), R(r), G(g), B(b){}
+    explicit constexpr sARGB_t(const ARGB_t &Linear) noexcept
     {
         // Normalize.
         const float Normal[3] = {Linear.R * inv255, Linear.G * inv255, Linear.B * inv255};
@@ -56,7 +57,7 @@ struct sARGB_t
         G = (Normal[1] <= 0.0031308f) ? uint8_t(Normal[1] / 12.92f * 255.0f) : uint8_t(cmp::pow((Normal[1] + 0.055f) / 1.055f, 2.4f) * 255.0f);
         B = (Normal[2] <= 0.0031308f) ? uint8_t(Normal[2] / 12.92f * 255.0f) : uint8_t(cmp::pow((Normal[2] + 0.055f) / 1.055f, 2.4f) * 255.0f);
     }
-    explicit operator ARGB_t() const noexcept
+    explicit constexpr operator ARGB_t() const noexcept
     {
         // Normalize.
         const float Normal[3] = {R * inv255, G * inv255, B * inv255};
@@ -91,9 +92,19 @@ enum class Colorformat_t : uint8_t
     R5G6B5,
     R5G5B5,
 
+    // 8-BPP
+    PALETTE8,
+
+    // 4-BPP
+    PALETTE4,
+
     // 1 BPP has many names..
     MASK, MONOCHROME, BINARY
 };
+template <std::integral T> bool operator==(T Left, Colorformat_t Right)
+{
+    return Left == T(Right);
+}
 
 // For getting the channels, e.g. uint8_t Green = (getColormasks()[1] >> getColorshifts()[1]) & 0xFF;
 constexpr std::array<uint32_t, 4> getColormasks(Colorformat_t Format)
@@ -103,6 +114,7 @@ constexpr std::array<uint32_t, 4> getColormasks(Colorformat_t Format)
     {
         using enum Colorformat_t;
 
+        // 32-BPP
         case B8G8R8A8:
             RGBAMasks[0] = 0x0000FF00;
             RGBAMasks[1] = 0x00FF0000;
@@ -127,6 +139,8 @@ constexpr std::array<uint32_t, 4> getColormasks(Colorformat_t Format)
             RGBAMasks[2] = 0x00FF0000;
             RGBAMasks[3] = 0xFF000000;
             break;
+
+        // 24-BPP
         case B8G8R8:
             RGBAMasks[0] = 0x0000FF;
             RGBAMasks[1] = 0x00FF00;
@@ -137,6 +151,8 @@ constexpr std::array<uint32_t, 4> getColormasks(Colorformat_t Format)
             RGBAMasks[1] = 0x00FF00;
             RGBAMasks[2] = 0x0000FF;
             break;
+
+        // 16-BPP
         case B5G6R5:
             RGBAMasks[0] = 0x001F;
             RGBAMasks[1] = 0x07E0;
@@ -166,6 +182,14 @@ constexpr std::array<uint32_t, 4> getColorshifts(Colorformat_t Format)
     return { uint32_t(std::bit_width(Masks[0]) - 8), uint32_t(std::bit_width(Masks[1]) - 8),
              uint32_t(std::bit_width(Masks[2]) - 8), uint32_t(std::bit_width(Masks[3]) - 8) };
 };
+constexpr std::array<uint32_t, 4> getColormasks(uint16_t Format)
+{
+    return getColormasks(Colorformat_t(Format));
+}
+constexpr std::array<uint32_t, 4> getColorshifts(uint16_t Format)
+{
+    return getColorshifts(Colorformat_t(Format));
+}
 
 // Blending in linear colorspace.
 namespace Blend
@@ -195,7 +219,7 @@ namespace Blend
             return Value * Value * Value * Value * Value * Value * Value * (7.0f * Value * (2.0f * Value * (3.0f * Value * (Value * (11.0f * Value * (2.0f * Value - 13.0f) + 390.0f) - 572.0f) + 1430.0f) - 1287.0f) + 1716.0f);
 
         // A bit too smooth..
-        std::unreachable();
+        if constexpr (N > 6) std::unreachable();
     }
 
     // Not exactly blending, but common enough to optimize.
@@ -232,7 +256,7 @@ namespace Blend
             const auto Z = (1.0f - F) * G;
             const auto Y = F * G;
 
-            return {
+            return ARGB_t{
                 uint8_t(255.0f * Alpha),
                 uint8_t(255.0f * ((X * NA.R + Y * Modifier(NB.R, NA.R) + Z * NB.R) / Alpha)),
                 uint8_t(255.0f * ((X * NA.G + Y * Modifier(NB.G, NA.G) + Z * NB.G) / Alpha)),
