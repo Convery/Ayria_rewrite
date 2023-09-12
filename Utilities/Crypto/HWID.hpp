@@ -527,7 +527,7 @@ namespace HWID
             };
 
             // Buffer is updated by the driver call, so need to be contigious.
-            const uint32_t Commandsize = sizeof(NVIDIA_HDR) + (InOut.size() * sizeof(uint32_t));
+            const auto Commandsize = uint32_t(sizeof(NVIDIA_HDR) + (InOut.size() * sizeof(uint32_t)));
             const auto Buffer = (uint8_t *)alloca(Commandsize);
             const auto Header = (NVIDIA_HDR *)Buffer;
             std::memset(Buffer, 0, Commandsize);

@@ -12,7 +12,7 @@
 
 namespace QOI
 {
-    #pragma pack (push, 0)
+    #pragma pack (push, 1)
     struct Header_t
     {
         uint32_t Magic;

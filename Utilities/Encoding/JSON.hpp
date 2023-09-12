@@ -96,6 +96,7 @@ namespace JSON
 
         // Convert to a supported type.
         Value_t() = default;
+        template <cmp::Byte_t U, size_t N> CXPR Value_t(const U(&Value)[N]) : Storage(String_t{ Encoding::toUTF8(Value) }) {}
         template <Supported_t T> CXPR Value_t(const T &Value) : Storage(Value) {}
         template <typename T> CXPR Value_t(const T &Value)
         {
@@ -151,32 +152,33 @@ namespace JSON
             if (isType<Array_t>()) return std::get<Array_t>(Storage)[i];
             else { static Value_t Dummy{}; return Dummy; }
         }
-        Value_t &operator[](const String_t &Key)
-        {
-            if (isType<Object_t>()) return std::get<Object_t>(Storage)[Key];
-            else { static Value_t Dummy{}; return Dummy; }
-        }
-        Value_t &operator[](const std::string &Key)
-        {
-            if (isType<Object_t>()) return std::get<Object_t>(Storage)[Encoding::toUTF8(Key)];
-            else { static Value_t Dummy{}; return Dummy; }
-        }
         const Value_t &operator[](size_t i) const
         {
             if (isType<Array_t>()) return std::get<Array_t>(Storage)[i];
             else { static Value_t Dummy{}; return Dummy; }
         }
-        const Value_t &operator[](const String_t &Key) const
+        template <cmp::Byte_t U> Value_t &operator[](const std::basic_string_view<U> &Key)
         {
-            if (isType<Object_t>())
+            if (isType<Object_t>()) return std::get<Object_t>(Storage)[Encoding::toUTF8(Key)];
+            else { static Value_t Dummy{}; return Dummy; }
+        }
+        template <cmp::Byte_t U> const Value_t &operator[](const std::basic_string_view<U> &Key) const
+        {
+                        if (isType<Object_t>())
             {
                 const auto &Object = std::get<Object_t>(Storage);
-                if (Object.contains(Key)) return Object.at(Key);
+                if (Object.contains(Encoding::toUTF8(Key)))
+                    return Object.at(Encoding::toUTF8(Key));
             }
 
             static Value_t Dummy{}; return Dummy;
         }
-        const Value_t &operator[](const std::string &Key) const
+        template <cmp::Byte_t U, size_t N> Value_t &operator[](const U(&Key)[N])
+        {
+            if (isType<Object_t>()) return std::get<Object_t>(Storage)[Encoding::toUTF8(Key)];
+            else { static Value_t Dummy{}; return Dummy; }
+        }
+        template <cmp::Byte_t U, size_t N> const Value_t &operator[](const U(&Key)[N]) const
         {
             if (isType<Object_t>())
             {
@@ -188,18 +190,18 @@ namespace JSON
             static Value_t Dummy{}; return Dummy;
         }
 
-        // Get storage safely.
-        template <typename T = Value_t> requires(std::is_convertible_v<Value_t, T>)
-        CXPR T value(const String_t &Key, const T &Defaultvalue = {}) const
+        // Safer access the the storage.
+        template <typename T = Value_t, cmp::Byte_t U, size_t N> requires(std::is_convertible_v<Value_t, T>)
+        CXPR T value(const U(&Key)[N], const T &Defaultvalue = {}) const
         {
             if (const auto Value = operator[](Key))
                 return Value;
             return Defaultvalue;
         }
-        template <typename T = Value_t> requires(std::is_convertible_v<Value_t, T>)
-        CXPR T value(const std::string &Key, const T &Defaultvalue = {}) const
+        template <typename T = Value_t, cmp::Byte_t U> requires(std::is_convertible_v<Value_t, T>)
+        CXPR T value(const std::basic_string_view<U> &Key, const T &Defaultvalue = {}) const
         {
-            if (const auto Value = operator[](Key))
+            if (const auto Value = operator[](Encoding::toUTF8(Key)))
                 return Value;
             return Defaultvalue;
         }
@@ -446,6 +448,9 @@ namespace JSON
     // Pretty basic safety checks.
     inline Value_t Parse(std::u8string_view JSONString)
     {
+        // To simplify other operations, accept a null string.
+        if (JSONString.empty()) [[unlikely]] return {};
+
         // Malformed string check. Missing brackets, null-chars messing up C-string parsing, etc..
         const auto C1 = std::ranges::count(JSONString, '{') != std::ranges::count(JSONString, '}');
         const auto C2 = std::ranges::count(JSONString, '[') != std::ranges::count(JSONString, ']');

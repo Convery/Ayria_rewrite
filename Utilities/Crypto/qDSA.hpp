@@ -1235,7 +1235,7 @@ namespace qDSA
     // Create a keypair from a random seed.
     constexpr Publickey_t getPublickey(const Privatekey_t &Privatekey)
     {
-        using namespace Internal;
+        using namespace qDSA::Internal;
 
         const auto Scalar = getScalar(Privatekey);
         const auto Ladders = Ladder(Scalar);
@@ -1257,7 +1257,7 @@ namespace qDSA
     // Compute a shared secret between two keypairs (A.PK, B.SK) == (B.PK, A.SK)
     constexpr Sharedkey_t Generatesecret(const Publickey_t &Publickey, const Privatekey_t &Privatekey)
     {
-        using namespace Internal;
+        using namespace qDSA::Internal;
 
         const auto PK = Decompress(K256_t{ Publickey });
         const auto PKW = Wrap(PK);
@@ -1270,7 +1270,7 @@ namespace qDSA
     // Create a signature for the provided message, somewhat hardened against hackery.
     template <cmp::Range_t C> constexpr Signature_t Sign(const Publickey_t &Publickey, const Privatekey_t &Privatekey, const C &Message)
     {
-        using namespace Internal;
+        using namespace qDSA::Internal;
         const auto Buffer = cmp::getBytes(Message);
 
         // Get the first point.
@@ -1307,7 +1307,7 @@ namespace qDSA
     // Verify that the message was signed by the owner of the public key.
     template <cmp::Range_t C> constexpr bool Verify(const Publickey_t &Publickey, const Signature_t &Signature, const C &Message)
     {
-        using namespace Internal;
+        using namespace qDSA::Internal;
         const auto Buffer = cmp::getBytes(Message);
 
         // Validate compression of the first point.

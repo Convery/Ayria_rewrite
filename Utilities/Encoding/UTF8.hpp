@@ -29,18 +29,9 @@ namespace Encoding
                 if (Intptr[i] & 0x80808080)
                     return false;
 
-            if constexpr (std::endian::native == std::endian::little)
-            {
-                if (Remaining == 3) return !(Intptr[Count32] & 0x00808080);
-                if (Remaining == 2) return !(Intptr[Count32] & 0x00008080);
-                if (Remaining == 1) return !(Intptr[Count32] & 0x00000080);
-            }
-            else
-            {
-                if (Remaining == 3) return !(Intptr[Count32] & 0x80808000);
-                if (Remaining == 2) return !(Intptr[Count32] & 0x80800000);
-                if (Remaining == 1) return !(Intptr[Count32] & 0x80000000);
-            }
+            for (size_t i = 0; i < Remaining; ++i)
+                if (Input[(Count32 * 4) + i] & 0x80)
+                    return false;
         }
 
         // Covers wchar_t and char16_t; and others at compiletime.
