@@ -36,8 +36,7 @@ namespace Rendering
                                    std::reference_wrapper<Realizedbitmap_t>>;
 
     // Framebuffers can generally be greatly improved by platform-specific implementations.
-    extern std::pair<Handle_t, uint8_t *> Createframebuffer(uint16_t Width, uint16_t Height, Colorformat_t Pixelformat);
-    extern Handle_t Createbitmap(uint16_t Width, uint16_t Height, Colorformat_t Pixelformat, const uint8_t *Pixeldata);
+    extern std::pair<Handle_t, std::span<uint8_t>> Createframebuffer(uint16_t Width, uint16_t Height, Colorformat_t Pixelformat);
 
     // Renderers provide AA using a 2X downsample, coordinates are global.
     struct Interface_t
@@ -68,8 +67,8 @@ namespace Rendering
         virtual void drawPolygon(std::span<const vec2i> Points, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline) { ASSERT(false); }
 
         // Images can also be used for drawing gradients and other such background textures.
-        virtual void drawImage_stretched(vec4i Destionation, const Texture_t &Image) { ASSERT(false); }
-        virtual void drawImage_tiled(vec4i Destionation, const Texture_t &Image) { ASSERT(false); }
+        virtual void drawImage_stretched(vec4i Destination, const Texture_t &Image) { ASSERT(false); }
+        virtual void drawImage_tiled(vec4i Destination, const Texture_t &Image) { ASSERT(false); }
         virtual void drawImage(vec2i Position, const Texture_t &Image) { ASSERT(false); }
     };
 

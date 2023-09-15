@@ -26,16 +26,16 @@ namespace Rendering
         uint16_t Width{}, Height{};
         struct
         {
+            uint16_t Paletteformat : 4{};   // AAColor::Colorformat_t enum.
             uint16_t Palettecount : 8{};    // != 0 If a palette is used.
-            uint16_t Colorformat : 4{};     // AAColor::Colorformat_t enum.
-            uint16_t isAnimated : 1{};      // Palette may animate.
-            uint16_t RESERVED : 3{};        // Padding.
+            uint16_t Pixelformat : 4{};     // AAColor::Colorformat_t enum.
         };
     };
 
     // Stored as [Header][Palette][Pixels]
     struct Palettebitmap_t : Bitmapheader_t
     {
+        // In-case the system needs padding.
         uint16_t Pixeloffset{};
 
         constexpr uint8_t getBPP() const
@@ -48,42 +48,16 @@ namespace Rendering
 
                 return 8;
             }
-            switch ((Colorformat_t)Colorformat)
-            {
-                using enum Colorformat_t;
 
-                case B8G8R8A8:
-                case R8G8B8A8:
-                case A8R8G8B8:
-                case A8B8G8R8:
-                    return 32;
-
-                case B8G8R8:
-                case R8G8B8:
-                    return 24;
-
-                case B5G6R5:
-                case B5G5R5:
-                case R5G6B5:
-                case R5G5B5:
-                    return 16;
-
-                case MONOCHROME:
-                case BINARY:
-                case MASK:
-                    return 1;
-            }
-
-            // Probably zero initialized..
-            std::unreachable();
+            return getColorwidth(Pixelformat);
         }
-        constexpr uint8_t *getPixels() const
+        constexpr void *getPixels() const
         {
             return (uint8_t *)(this) + sizeof(*this) + Pixeloffset;
         }
-        constexpr uint32_t *getPalette() const
+        constexpr void *getPalette() const
         {
-            return (uint32_t *)((uint8_t *)(this) + sizeof(*this));
+            return ((uint8_t *)(this) + sizeof(*this));
         }
     };
     #pragma pack(pop)
@@ -96,19 +70,18 @@ namespace Rendering
 
         QOIBitmap_t(QOI::Header_t *Header, size_t Totalsize)
         {
-            Width = Header->Width;
-            Height = Header->Height;
-            Colorformat = (uint16_t)(Header->Channels == 3 ? Colorformat_t::R8G8B8 : Colorformat_t::R8G8B8A8);
-
+            Pixelformat = (uint16_t)(Header->Channels == 3 ? Colorformat_t::R8G8B8 : Colorformat_t::R8G8B8A8);
             Encodedimage = { (uint8_t *)Header, Totalsize };
+            Height = Header->Height;
+            Width = Header->Width;
         }
         QOIBitmap_t() = default;
 
         uint8_t getBPP() const
         {
-            return 24 + ((uint16_t)Colorformat_t::R8G8B8 == Colorformat) * 8;
+            return 24 + ((uint16_t)Colorformat_t::R8G8B8 == Pixelformat) * 8;
         }
-        uint8_t *getPixels()
+        void *getPixels()
         {
             if (!Decodedimage) Decodedimage = std::make_unique<Blob_t>(QOI::Decode(Encodedimage, nullptr));
             return Decodedimage->data();
@@ -119,12 +92,40 @@ namespace Rendering
     struct Realizedbitmap_t : Bitmapheader_t
     {
         std::variant<std::monostate, QOIBitmap_t *, const Palettebitmap_t *> Parent{};
-        Handle_t Surface{};
+        std::shared_ptr<void> Platformhandle{};
 
-        Realizedbitmap_t(const Bitmapheader_t &Info, Handle_t Surface) : Bitmapheader_t(Info), Surface(Surface) {}
-        Realizedbitmap_t(const Palettebitmap_t *Bitmap) : Bitmapheader_t(*Bitmap), Parent(Bitmap) {}
-        Realizedbitmap_t(QOIBitmap_t *Bitmap) : Bitmapheader_t(*Bitmap), Parent(Bitmap) {}
-        Realizedbitmap_t(std::string_view Filepath) {}
+        // Optional, but come implementations require direct access.
+        std::span<uint32_t> sPalette{};
+        std::span<uint8_t> sPixels{};
+
+        // Renderer-defined operations, assumes Bitmapheader_t::Paletteformat
+        virtual void Animatepalette(std::span<uint32_t> Newpalette) {}
+        virtual void Animatepalette(uint8_t Rotationoffset) {}
+        virtual void Reinitializepalette() {}
+
+        // Parsing of the input needs to be done in the
+        Realizedbitmap_t(const Bitmapheader_t &Info, const std::shared_ptr<void> &Handle) noexcept : Bitmapheader_t(Info), Platformhandle(Handle) {}
+        Realizedbitmap_t(const Palettebitmap_t *Bitmap) noexcept : Bitmapheader_t(*Bitmap), Parent(Bitmap) {}
+        Realizedbitmap_t(QOIBitmap_t *Bitmap) noexcept : Bitmapheader_t(*Bitmap), Parent(Bitmap) {}
+        Realizedbitmap_t(const Realizedbitmap_t &Other) noexcept : Bitmapheader_t(Other)
+        {
+            Platformhandle = Other.Platformhandle;
+            sPalette = Other.sPalette;
+            sPixels = Other.sPixels;
+        }
+        Realizedbitmap_t(Realizedbitmap_t &&Other) noexcept : Bitmapheader_t(Other)
+        {
+            Platformhandle = std::move(Other.Platformhandle);
+            Other.Platformhandle.reset();
+
+            sPalette = Other.sPalette;
+            sPixels = Other.sPixels;
+            Other.sPalette = {};
+            Other.sPixels = {};
+        }
+
+        Realizedbitmap_t(std::string_view Filepath) noexcept {}
+        virtual ~Realizedbitmap_t() = default;
         Realizedbitmap_t() = default;
 
         uint8_t getBPP() const
@@ -138,7 +139,7 @@ namespace Rendering
                 return 8;
             }
 
-            switch ((Colorformat_t)Colorformat)
+            switch ((Colorformat_t)Pixelformat)
             {
                 using enum Colorformat_t;
 
@@ -168,9 +169,6 @@ namespace Rendering
                     std::unreachable();
             }
         }
-        virtual ~Realizedbitmap_t() = default;
-        virtual void Animatepalette(int8_t Offset) {}
-        virtual void Copypalette(Handle_t Othercontext) {}
     };
 
     // Texture-atlas's are usually used when multiple images share a single palette.
@@ -178,17 +176,17 @@ namespace Rendering
     {
         vec4i Subset;
 
-        Atlasbitmap_t(const Realizedbitmap_t &Parent, vec4i Region) : Realizedbitmap_t(Parent), Subset(Region) {}
+        Atlasbitmap_t(const Realizedbitmap_t &Parent, vec4i Region) : Realizedbitmap_t({ Parent }), Subset(Region) {}
     };
 
     // Returns the platforms own version of the bitmap.
-    extern std::unique_ptr<Realizedbitmap_t> Realize(const Bitmapheader_t &Info, Handle_t Surface);
+    extern std::unique_ptr<Realizedbitmap_t> Realize(const Bitmapheader_t &Info, const std::shared_ptr<void> &Handle);
     extern std::unique_ptr<Realizedbitmap_t> Realize(const Palettebitmap_t *Bitmap);
-    extern std::unique_ptr<Realizedbitmap_t> Realize(const QOIBitmap_t *Bitmap);
     extern std::unique_ptr<Realizedbitmap_t> Realize(std::string_view Filepath);
+    extern std::unique_ptr<Realizedbitmap_t> Realize(QOIBitmap_t *Bitmap);
 
-    // For when we don't want to embed anything, result resolution being Steps x 1.
-    extern std::unique_ptr<Realizedbitmap_t> Creategradient(ARGB_t First, ARGB_t Last, size_t Steps, bool isAnimated = false, uint8_t Smoothfactor = 0);
+    // For when we don't want to embed anything, result resolution being Steps x Height.
+    extern std::unique_ptr<Realizedbitmap_t> Creategradient(ARGB_t First, ARGB_t Last, uint16_t Steps, bool isAnimated = false, uint8_t Smoothfactor = 0, uint16_t Height = 1);
 
     // We generally don't use 32-BPP, so create a mask from an image for transparency.
     extern std::unique_ptr<Realizedbitmap_t> Createmask(const Atlasbitmap_t *Source, ARGB_t Backgroundcolor);

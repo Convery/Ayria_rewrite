@@ -8,7 +8,7 @@
 #include <Utilities/Utilities.hpp>
 
 // Acceptable error.
-constexpr float inv255 = static_cast<float>(1.0 / 255.0);
+constexpr float inv255 = float(1.0 / 255.0);
 
 // There's no universally preferred format for colors.
 // Web-devs and OpenGL seem to prefer RGBA while DirectX prefer ARGB.
@@ -189,6 +189,44 @@ constexpr std::array<uint32_t, 4> getColormasks(uint16_t Format)
 constexpr std::array<uint32_t, 4> getColorshifts(uint16_t Format)
 {
     return getColorshifts(Colorformat_t(Format));
+}
+constexpr uint8_t getColorwidth(Colorformat_t Format)
+{
+    switch (Format)
+    {
+        using enum Colorformat_t;
+
+        case B8G8R8A8:
+        case R8G8B8A8:
+        case A8R8G8B8:
+        case A8B8G8R8:
+            return 32;
+
+        case B8G8R8:
+        case R8G8B8:
+            return 24;
+
+        case B5G6R5:
+        case B5G5R5:
+        case R5G6B5:
+        case R5G5B5:
+            return 16;
+
+        case PALETTE8: return 8;
+        case PALETTE4: return 4;
+
+        case MONOCHROME:
+        case BINARY:
+        case MASK:
+            return 1;
+
+        default:
+            return 1;
+    }
+}
+constexpr uint8_t getColorwidth(uint16_t Format)
+{
+    return getColorwidth(Colorformat_t(Format));
 }
 
 // Blending in linear colorspace.

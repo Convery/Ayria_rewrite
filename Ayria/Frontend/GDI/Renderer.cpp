@@ -16,11 +16,14 @@
 #include <Utilities/Utilities.hpp>
 #include "../Rendering.hpp"
 
+#if defined (_WIN32)
 namespace Rendering
 {
-    struct GDIBitmap_t;
-
-    // GDI is internally ref-counted so deletions are deferred, but we need to keep track of the selected object.
+    // Simpler management using RAII.
+    inline auto MakeDC(HDC Parent)
+    {
+        return std::unique_ptr<std::remove_pointer<HDC>::type, decltype(&::DeleteDC)>(CreateCompatibleDC(Parent), &DeleteDC);
+    }
     struct GDIRAII_t
     {
         HDC Devicecontext;
@@ -58,22 +61,11 @@ namespace Rendering
             SetDCBrushColor(Devicecontext, Old);
         }
     };
-    struct PaletteRAII_t
-    {
-        HDC Devicecontext{};
-        HPALETTE Previous{};
 
-        PaletteRAII_t(HDC DC, HPALETTE Current) : Devicecontext(DC)
-        {
-            Previous = SelectPalette(DC, Current, FALSE);
-            RealizePalette(DC);
-        }
-        ~PaletteRAII_t()
-        {
-            SelectPalette(Devicecontext, Previous, FALSE);
-            RealizePalette(Devicecontext);
-        }
-    };
+    // For somewhat cleaner code.
+    bool isColor(const Texture_t &Texture) { return std::holds_alternative<ARGB_t>(Texture); }
+    bool isNULL(const Texture_t &Texture) { return std::holds_alternative<std::monostate>(Texture); }
+    bool isBitmap(const Texture_t &Texture) { return std::holds_alternative<std::reference_wrapper<Realizedbitmap_t>>(Texture) || std::holds_alternative<std::reference_wrapper<Atlasbitmap_t>>(Texture); }
 
     // Try to re-use as many objects as possible rather than deallocating.
     static GDIRAII_t Stockobject(HDC Devicecontext, int ID)
@@ -110,16 +102,10 @@ namespace Rendering
         return GDIRAII_t{ Devicecontext, *Entry };
     }
 
-    // For somewhat cleaner code.
-    bool isColor(const Texture_t &Texture) { return std::holds_alternative<ARGB_t>(Texture); }
-    bool isNULL(const Texture_t &Texture) { return std::holds_alternative<std::monostate>(Texture); }
-    bool isBitmap(const Texture_t &Texture) { return std::holds_alternative<std::reference_wrapper<Realizedbitmap_t>>(Texture); }
-
     // NOTE(tcn): Optimization point, need to benchmark on more hardware.
     static void Clear(HDC Device, vec4i Rect)
     {
-        constexpr size_t Strategy = 3;
-        GdiFlush();
+        constexpr size_t Strategy = 0;
 
         if constexpr (Strategy == 0)
         {
@@ -160,8 +146,8 @@ namespace Rendering
         }
     }
 
-    // The actual implementation.
-    namespace GDI
+    // Extracted implementation for GDI.
+    namespace Impl
     {
         constexpr auto Maskcolor = ARGB_t(0xFF, 0xFF, 0xFF);
 
@@ -174,26 +160,76 @@ namespace Rendering
         }
 
         // For textured operations we create a mask and bitblt the texture, so it's worth extracting it.
-        inline void MaskedBlt(HDC Destination, HDC Source, HDC Mask, vec2i Size, vec2i DstOffset, vec2i SrcOffset)
+        inline void MaskedBlt(vec2i Size, HDC Destination, vec2i DstOffset, HDC Source, vec2i SrcOffset, HDC Mask, vec2i MaskOffset)
         {
-            BitBlt(Destination, DstOffset.x, DstOffset.y, DstOffset.x + Size.x, DstOffset.y + Size.y, Mask, SrcOffset.x, SrcOffset.y, SRCAND);      // AND
-            BitBlt(Destination, DstOffset.x, DstOffset.y, DstOffset.x + Size.x, DstOffset.y + Size.y, Source, SrcOffset.x, SrcOffset.y, SRCPAINT);  // OR
+            // NOTE(tcn): Windows 95/98 did not have MaskBlt yet.
+            #if defined (__CHICAGO_COMPAT)
+            const auto MemBMP = CreateCompatibleBitmap(Destination, Size.x, Size.y);
+            const auto MemBMP2 = CreateCompatibleBitmap(Destination, Size.x, Size.y);
+            const auto MemoryDC = CreateCompatibleDC(Destination);
+            const auto MemoryDC2 = CreateCompatibleDC(Destination);
+            SelectObject(MemoryDC, MemBMP);
+            SelectObject(MemoryDC2, MemBMP2);
+
+            // Select the masked part from the texture.
+            BitBlt(MemoryDC, 0, 0, Size.x, Size.y, Mask, MaskOffset.x, MaskOffset.y, SRCCOPY);
+            BitBlt(MemoryDC, 0, 0, Size.x, Size.y, Source, SrcOffset.x, SrcOffset.y, SRCAND);
+
+            // Select everything but the masked part from the source.
+            BitBlt(MemoryDC2, 0, 0, Size.x, Size.y, Mask, MaskOffset.x, MaskOffset.y, NOTSRCCOPY);
+            BitBlt(MemoryDC2, 0, 0, Size.x, Size.y, Destination, DstOffset.x, DstOffset.y, SRCAND);
+
+            // Merge them together and output to the screen.
+            BitBlt(MemoryDC, 0, 0, Size.x, Size.y, MemoryDC2, 0, 0, SRCPAINT);
+            BitBlt(Destination, DstOffset.x, DstOffset.y, Size.x, Size.y, MemoryDC, 0, 0, SRCCOPY);
+
+            DeleteBitmap(MemBMP2);
+            DeleteBitmap(MemBMP);
+            DeleteDC(MemoryDC2);
+            DeleteDC(MemoryDC);
+            #else
+            const auto MaskBMP = GetCurrentObject(Mask, OBJ_BITMAP);
+            MaskBlt(Destination, DstOffset.x, DstOffset.y, Size.x, Size.y, Source, SrcOffset.x, SrcOffset.y, (HBITMAP)MaskBMP, MaskOffset.x, MaskOffset.y, MAKEROP4(SRCCOPY, 0xAA0000));
+            #endif
         }
         inline void MaskedBlt(HDC Destination, const std::reference_wrapper<Atlasbitmap_t> &Source, HDC Mask, vec2i Size, vec2i Offset = {})
         {
-            return MaskedBlt(Destination, HDC(Source.get().Surface), Mask, Size, Offset, Source.get().Subset.ab);
+            ASSERT(Source.get().Platformhandle);
+            const auto SourceDC = HDC(Source.get().Platformhandle.get());
+            const auto Dim = Source.get().Subset.cd - Source.get().Subset.ab;
+
+            if (Dim.x >= Size.x && Dim.y >= Size.y)
+                return MaskedBlt(Size, Destination, Offset, SourceDC, {}, Mask, Source.get().Subset.ab);
+
+            for (int y = 0; y < Size.y; y += Dim.y)
+            {
+                for (int x = 0; x < Size.x; x += Dim.x)
+                {
+                    const auto Clampedwidth = std::min(Dim.x, int16_t(Size.x - x));
+                    const auto Clampedheight = std::min(Dim.y, int16_t(Size.y - y));
+
+                    MaskedBlt({ Clampedwidth, Clampedheight }, Destination, Offset + vec2i{ x, y }, SourceDC, Source.get().Subset.ab + vec2i{ x, y }, Mask, vec2i{ x, y });
+                }
+            }
         }
         inline void MaskedBlt(HDC Destination, const std::reference_wrapper<Realizedbitmap_t> &Source, HDC Mask, vec2i Size, vec2i Offset = {})
         {
-            return MaskedBlt(Destination, HDC(Source.get().Surface), Mask, Size, Offset, {});
-        }
-        inline void MaskedBlt(HDC Destination, const std::reference_wrapper<Atlasbitmap_t> &Source, const std::reference_wrapper<Realizedbitmap_t> &Mask, vec2i Size, vec2i Offset = {})
-        {
-            return MaskedBlt(Destination, HDC(Source.get().Surface), HDC(Mask.get().Surface), Size, Offset, Source.get().Subset.ab);
-        }
-        inline void MaskedBlt(HDC Destination, const std::reference_wrapper<Realizedbitmap_t> &Source, const std::reference_wrapper<Realizedbitmap_t> &Mask, vec2i Size, vec2i Offset = {})
-        {
-            return MaskedBlt(Destination, HDC(Source.get().Surface), HDC(Mask.get().Surface), Size, Offset, {});
+            ASSERT(Source.get().Platformhandle);
+            const auto SourceDC = HDC(Source.get().Platformhandle.get());
+
+            if (Source.get().Width >= Size.x && Source.get().Height >= Size.y)
+                return MaskedBlt(Size, Destination, Offset, SourceDC, {}, Mask, {});
+
+            for (int y = 0; y < Size.y; y += Source.get().Height)
+            {
+                for (int x = 0; x < Size.x; x += Source.get().Width)
+                {
+                    const auto Clampedwidth = std::min(Source.get().Width, uint16_t(Size.x - x));
+                    const auto Clampedheight = std::min(Source.get().Height, uint16_t(Size.y - y));
+
+                    MaskedBlt({ Clampedwidth, Clampedheight }, Destination, Offset + vec2i{ x, y }, SourceDC, {}, Mask, { x, y });
+                }
+            }
         }
 
         // A circle is just a special ellipse..
@@ -212,26 +248,23 @@ namespace Rendering
                     [&](const std::reference_wrapper<Atlasbitmap_t> &Value)
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        drawEllipse_solid(MaskDC, {}, Size, Maskcolor);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Position);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        drawEllipse_solid(MaskDC.get(), {}, Size, Maskcolor);
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Position);
+
                     },
                     [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        drawEllipse_solid(MaskDC, {}, Size, Maskcolor);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Position);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        drawEllipse_solid(MaskDC.get(), {}, Size, Maskcolor);
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Position);
                     }
             }, Fill);
         }
@@ -250,26 +283,24 @@ namespace Rendering
                     [&](const std::reference_wrapper<Atlasbitmap_t> &Value)
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        drawEllipse_outline(MaskDC, {}, Size, Linewidth, Maskcolor);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Position);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        drawEllipse_outline(MaskDC.get(), {}, Size, Linewidth, Maskcolor);
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Position);
+
                     },
                     [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        drawEllipse_outline(MaskDC, {}, Size, Linewidth, Maskcolor);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Position);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        drawEllipse_outline(MaskDC.get(), {}, Size, Linewidth, Maskcolor);
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Position);
+
                     }
             }, Outline);
         }
@@ -327,18 +358,18 @@ namespace Rendering
                     const POINT Size = { (Max.x - Min.x), (Max.y - Min.y) };
 
                     const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                    const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                    SelectObject(MaskDC, Mask);
-
-                    const auto RAII1 = Stockobject(MaskDC, NULL_BRUSH);
-                    const auto RAII2 = Createpen(MaskDC, Maskcolor, Linewidth);
-                    SetViewportOrgEx(MaskDC, -(Size.x), -(Size.y), nullptr);
-
-                    Polyline(MaskDC, Points.data(), int(Points.size()));
-                    MaskedBlt(Devicecontext, Value, MaskDC, Size, Min);
-
+                    const auto MaskDC = MakeDC(Devicecontext);
+                    SelectObject(MaskDC.get(), Mask);
                     DeleteObject(Mask);
-                    DeleteDC(MaskDC);
+
+                    const auto RAII1 = Stockobject(MaskDC.get(), NULL_BRUSH);
+                    const auto RAII2 = Createpen(MaskDC.get(), Maskcolor, Linewidth);
+
+                    SetViewportOrgEx(MaskDC.get(), -(Min.x), -(Min.y), nullptr);
+                    Polyline(MaskDC.get(), Points.data(), int(Points.size()));
+                    SetViewportOrgEx (MaskDC.get(), 0, 0, nullptr);
+
+                    MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Min);
                 },
                 [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
                 {
@@ -355,18 +386,18 @@ namespace Rendering
                     const POINT Size = { (Max.x - Min.x), (Max.y - Min.y) };
 
                     const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                    const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                    SelectObject(MaskDC, Mask);
-
-                    const auto RAII1 = Stockobject(MaskDC, NULL_BRUSH);
-                    const auto RAII2 = Createpen(MaskDC, Maskcolor, Linewidth);
-                    SetViewportOrgEx(MaskDC, -(Size.x), -(Size.y), nullptr);
-
-                    Polyline(MaskDC, Points.data(), int(Points.size()));
-                    MaskedBlt(Devicecontext, Value, MaskDC, Size, Min);
-
+                    const auto MaskDC = MakeDC(Devicecontext);
+                    SelectObject(MaskDC.get(), Mask);
                     DeleteObject(Mask);
-                    DeleteDC(MaskDC);
+
+                    const auto RAII1 = Stockobject(MaskDC.get(), NULL_BRUSH);
+                    const auto RAII2 = Createpen(MaskDC.get(), Maskcolor, Linewidth);
+
+                    SetViewportOrgEx(MaskDC.get(), -(Min.x), -(Min.y), nullptr);
+                    Polyline(MaskDC.get(), Points.data(), int(Points.size()));
+                    SetViewportOrgEx (MaskDC.get(), 0, 0, nullptr);
+
+                    MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Min);
                 }
             }, Texture);
         }
@@ -402,34 +433,34 @@ namespace Rendering
                     [&](const std::reference_wrapper<Atlasbitmap_t> &Value)
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        const auto RAII1 = Createbrush(MaskDC, Maskcolor);
-                        const auto RAII2 = Stockobject(MaskDC, NULL_PEN);
-                        SetViewportOrgEx(MaskDC, -(Size.x), -(Size.y), nullptr);
-
-                        Polygon(MaskDC, Points.data(), int(Points.size()));
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Min);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        const auto RAII1 = Createbrush(MaskDC.get(), Maskcolor);
+                        const auto RAII2 = Stockobject(MaskDC.get(), NULL_PEN);
+
+                        SetViewportOrgEx(MaskDC.get(), -(Min.x), -(Min.y), nullptr);
+                        Polygon(MaskDC.get(), Points.data(), int(Points.size()));
+                        SetViewportOrgEx (MaskDC.get(), 0, 0, nullptr);
+
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Min);
                     },
                     [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        const auto RAII1 = Createbrush(MaskDC, Maskcolor);
-                        const auto RAII2 = Stockobject(MaskDC, NULL_PEN);
-                        SetViewportOrgEx(MaskDC, -(Size.x), -(Size.y), nullptr);
-
-                        Polygon(MaskDC, Points.data(), int(Points.size()));
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Min);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        const auto RAII1 = Createbrush(MaskDC.get(), Maskcolor);
+                        const auto RAII2 = Stockobject(MaskDC.get(), NULL_PEN);
+
+                        SetViewportOrgEx(MaskDC.get(), -(Min.x), -(Min.y), nullptr);
+                        Polygon(MaskDC.get(), Points.data(), int(Points.size()));
+                        SetViewportOrgEx (MaskDC.get(), 0, 0, nullptr);
+
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Min);
                     }
             }, Fill);
         }
@@ -478,38 +509,35 @@ namespace Rendering
                     const auto Size = Bottomright - Topleft;
 
                     const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                    const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                    SelectObject(MaskDC, Mask);
-
-                    const auto RAII1 = Createbrush(MaskDC, Maskcolor);
-                    const auto RAII2 = Stockobject(MaskDC, NULL_PEN);
-
-                    if (Rounding == 0) Rectangle(MaskDC, 0, 0, Size.x, Size.y);
-                    else RoundRect(MaskDC, 0, 0, Size.x, Size.y, Rounding, Rounding);
-
-                    MaskedBlt(Devicecontext, Value, MaskDC, Size, Topleft);
-
+                    const auto MaskDC = MakeDC(Devicecontext);
+                    SelectObject(MaskDC.get(), Mask);
                     DeleteObject(Mask);
-                    DeleteDC(MaskDC);
+
+                    const auto RAII1 = Createbrush(MaskDC.get(), Maskcolor);
+                    const auto RAII2 = Stockobject(MaskDC.get(), NULL_PEN);
+
+                    if (Rounding == 0) Rectangle(MaskDC.get(), 0, 0, Size.x, Size.y);
+                    else RoundRect(MaskDC.get(), 0, 0, Size.x, Size.y, Rounding, Rounding);
+
+                    MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Topleft);
+
                 },
                 [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
                 {
                     const auto Size = Bottomright - Topleft;
 
                     const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                    const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                    SelectObject(MaskDC, Mask);
-
-                    const auto RAII1 = Createbrush(MaskDC, Maskcolor);
-                    const auto RAII2 = Stockobject(MaskDC, NULL_PEN);
-
-                    if (Rounding == 0) Rectangle(MaskDC, 0, 0, Size.x, Size.y);
-                    else RoundRect(MaskDC, 0, 0, Size.x, Size.y, Rounding, Rounding);
-
-                    MaskedBlt(Devicecontext, Value, MaskDC, Size, Topleft);
-
+                    const auto MaskDC = MakeDC(Devicecontext);
+                    SelectObject(MaskDC.get(), Mask);
                     DeleteObject(Mask);
-                    DeleteDC(MaskDC);
+
+                    const auto RAII1 = Createbrush(MaskDC.get(), Maskcolor);
+                    const auto RAII2 = Stockobject(MaskDC.get(), NULL_PEN);
+
+                    if (Rounding == 0) Rectangle(MaskDC.get(), 0, 0, Size.x, Size.y);
+                    else RoundRect(MaskDC.get(), 0, 0, Size.x, Size.y, Rounding, Rounding);
+
+                    MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Topleft);
                 }
             }, Texture);
         }
@@ -537,22 +565,20 @@ namespace Rendering
                     // Without rounding, we can do with a simple polyline.
                     if (Rounding == 0)
                     {
-                        drawPath(Devicecontext, { Topleft, { Bottomright.x, Topleft.y }, Bottomright, { Topleft.x, Bottomright.y } }, Linewidth, Outline);
+                        drawPath(Devicecontext, { Topleft, { Bottomright.x, Topleft.y }, Bottomright, { Topleft.x, Bottomright.y }, Topleft }, Linewidth, Outline);
                     }
                     else
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        const auto RAII1 = Stockobject(MaskDC, NULL_BRUSH);
-                        const auto RAII2 = Createpen(MaskDC, Maskcolor, Linewidth);
-
-                        RoundRect(MaskDC, 0, 0, Size.x, Size.y, Rounding, Rounding);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Topleft);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        const auto RAII1 = Stockobject(MaskDC.get(), NULL_BRUSH);
+                        const auto RAII2 = Createpen(MaskDC.get(), Maskcolor, Linewidth);
+
+                        RoundRect(MaskDC.get(), 0, 0, Size.x, Size.y, Rounding, Rounding);
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Topleft);
                     }
                 },
                 [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
@@ -562,22 +588,20 @@ namespace Rendering
                     // Without rounding, we can do with a simple polyline.
                     if (Rounding == 0)
                     {
-                        drawPath(Devicecontext, { Topleft, { Bottomright.x, Topleft.y }, Bottomright, { Topleft.x, Bottomright.y } }, Linewidth, Outline);
+                        drawPath(Devicecontext, { Topleft, { Bottomright.x, Topleft.y }, Bottomright, { Topleft.x, Bottomright.y }, Topleft }, Linewidth, Outline);
                     }
                     else
                     {
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                        SelectObject(MaskDC, Mask);
-
-                        const auto RAII1 = Stockobject(MaskDC, NULL_BRUSH);
-                        const auto RAII2 = Createpen(MaskDC, Maskcolor, Linewidth);
-
-                        RoundRect(MaskDC, 0, 0, Size.x, Size.y, Rounding, Rounding);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Topleft);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        const auto RAII1 = Stockobject(MaskDC.get(), NULL_BRUSH);
+                        const auto RAII2 = Createpen(MaskDC.get(), Maskcolor, Linewidth);
+
+                        RoundRect(MaskDC.get(), 0, 0, Size.x, Size.y, Rounding, Rounding);
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Topleft);
                     }
                 }
             }, Outline);
@@ -635,32 +659,32 @@ namespace Rendering
                     [&](const std::reference_wrapper<Atlasbitmap_t> &Value)
                     {
                         const auto Size = Boundingbox.cd - Boundingbox.ab;
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
 
-                        SelectObject(MaskDC, Mask);
-                        SetViewportOrgEx(MaskDC, -(Size.x), -(Size.y), nullptr);
-
-                        Arc_precalc(MaskDC, Boundingbox.x, Boundingbox.y, Boundingbox.z, Boundingbox.w, Focalpoint0.x, Focalpoint0.y, Focalpoint1.x, Focalpoint1.y, Maskcolor);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Centerpoint);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        SetViewportOrgEx(MaskDC.get(), -(Boundingbox.x), -(Boundingbox.y), nullptr);
+                        Arc_precalc(MaskDC.get(), Boundingbox.x, Boundingbox.y, Boundingbox.z, Boundingbox.w, Focalpoint0.x, Focalpoint0.y, Focalpoint1.x, Focalpoint1.y, Maskcolor);
+                        SetViewportOrgEx (MaskDC.get(), 0, 0, nullptr);
+
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Centerpoint);
                     },
                     [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
                     {
                         const auto Size = Boundingbox.cd - Boundingbox.ab;
-                        const auto MaskDC = CreateCompatibleDC(Devicecontext);
                         const auto Mask = CreateBitmap(Size.x, Size.y, 1, 1, nullptr);
 
-                        SelectObject(MaskDC, Mask);
-                        SetViewportOrgEx(MaskDC, -(Size.x), -(Size.y), nullptr);
-
-                        Arc_precalc(MaskDC, Boundingbox.x, Boundingbox.y, Boundingbox.z, Boundingbox.w, Focalpoint0.x, Focalpoint0.y, Focalpoint1.x, Focalpoint1.y, Maskcolor);
-                        MaskedBlt(Devicecontext, Value, MaskDC, Size, Centerpoint);
-
+                        const auto MaskDC = MakeDC(Devicecontext);
+                        SelectObject(MaskDC.get(), Mask);
                         DeleteObject(Mask);
-                        DeleteDC(MaskDC);
+
+                        SetViewportOrgEx(MaskDC.get(), -(Boundingbox.x), -(Boundingbox.y), nullptr);
+                        Arc_precalc(MaskDC.get(), Boundingbox.x, Boundingbox.y, Boundingbox.z, Boundingbox.w, Focalpoint0.x, Focalpoint0.y, Focalpoint1.x, Focalpoint1.y, Maskcolor);
+                        SetViewportOrgEx (MaskDC.get(), 0, 0, nullptr);
+
+                        MaskedBlt(Devicecontext, Value, MaskDC.get(), Size, Centerpoint);
                     }
             }, Texture);
         }
@@ -677,7 +701,7 @@ namespace Rendering
             // Common case.
             if (isColor(Stringtexture) && (isColor(Backgroundtexture) || isNULL(Backgroundtexture))) [[likely]]
             {
-                const auto Textcolor = SetTextColor(Devicecontext, std::get<ARGB_t>(Backgroundtexture));
+                const auto Textcolor = SetTextColor(Devicecontext, std::get<ARGB_t>(Stringtexture));
                 const auto Backgroundcolor = SetBkColor(Devicecontext, isColor(Backgroundtexture) ? COLORREF(std::get<ARGB_t>(Backgroundtexture)) : 0);
 
                 ExtTextOutW(Devicecontext, Position.x, Position.y, ETO_CLIPPED | (ETO_OPAQUE * isColor(Backgroundtexture)), &GDIRect, String.data(), int(String.size()), nullptr);
@@ -707,34 +731,30 @@ namespace Rendering
                 [&](const std::reference_wrapper<Atlasbitmap_t> &Value)
                 {
                     const auto Mask = CreateBitmap(Boxsize.x, Boxsize.y, 1, 1, nullptr);
-                    const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                    SelectObject(MaskDC, Mask);
+                    const auto MaskDC = MakeDC(Devicecontext);
+                    SelectObject(MaskDC.get(), Mask);
+                    DeleteObject(Mask);
 
                     const auto Textcolor = SetTextColor(Devicecontext, Maskcolor);
                     const auto Offsetrect = (RECT)(vec4i{ Boundingbox.ab - Boxsize, Boundingbox.cd - Boxsize });
                     ExtTextOutW(Devicecontext, Position.x - Boxsize.x, Position.y - Boxsize.y, ETO_CLIPPED, &Offsetrect, String.data(), int(String.size()), nullptr);
                     SetTextColor(Devicecontext, Textcolor);
 
-                    MaskedBlt(Devicecontext, Value, MaskDC, Boxsize, Boundingbox.ab);
-
-                    DeleteObject(Mask);
-                    DeleteDC(MaskDC);
+                    MaskedBlt(Devicecontext, Value, MaskDC.get(), Boxsize, Boundingbox.ab);
                 },
                 [&](const std::reference_wrapper<Realizedbitmap_t> &Value)
                 {
                     const auto Mask = CreateBitmap(Boxsize.x, Boxsize.y, 1, 1, nullptr);
-                    const auto MaskDC = CreateCompatibleDC(Devicecontext);
-                    SelectObject(MaskDC, Mask);
+                    const auto MaskDC = MakeDC(Devicecontext);
+                    SelectObject(MaskDC.get(), Mask);
+                    DeleteObject(Mask);
 
                     const auto Textcolor = SetTextColor(Devicecontext, Maskcolor);
                     const auto Offsetrect = (RECT)(vec4i{ Boundingbox.ab - Boxsize, Boundingbox.cd - Boxsize });
                     ExtTextOutW(Devicecontext, Position.x - Boxsize.x, Position.y - Boxsize.y, ETO_CLIPPED, &Offsetrect, String.data(), int(String.size()), nullptr);
                     SetTextColor(Devicecontext, Textcolor);
 
-                    MaskedBlt(Devicecontext, Value, MaskDC, Boxsize, Boundingbox.ab);
-
-                    DeleteObject(Mask);
-                    DeleteDC(MaskDC);
+                    MaskedBlt(Devicecontext, Value, MaskDC.get(), Boxsize, Boundingbox.ab);
                 }
             }, Stringtexture);
 
@@ -773,7 +793,7 @@ namespace Rendering
 
             SetTextAlign(Devicecontext, Previousalign);
         }
-        void drawText(HDC Devicecontext, vec4i Boundingbox, std::wstring_view String, const Texture_t &Stringtexture, const Texture_t &Backgroundtexture, Interface_t::Textoptions_t Options)
+        void drawText(HDC Devicecontext, vec4i Boundingbox, std::wstring_view String, uint8_t Fontsize, const Texture_t &Stringtexture, const Texture_t &Backgroundtexture, Interface_t::Textoptions_t Options)
         {
             ASSERT(!std::holds_alternative<std::monostate>(Stringtexture));
             const auto Boxsize = Boundingbox.cd - Boundingbox.ab;
@@ -788,7 +808,7 @@ namespace Rendering
 
             if (Options.Multiline)
             {
-                auto Position = vec2i{ Boundingbox.x + (Boxsize.x / 2) * Options.Centered, Boundingbox.y };
+                auto Position = vec2i{ Boundingbox.x + (Boxsize.x / 2) * Options.Centered, Boundingbox.y + (Boxsize.y / 2 - Fontsize / 2) * Options.Centered };
                 drawRectangle_solid(Devicecontext, Boundingbox.ab, Boundingbox.cd, 0, Backgroundtexture);
 
                 // For performance, we should handle newlines ourselves here.
@@ -804,7 +824,7 @@ namespace Rendering
             }
             else
             {
-                const auto Position = vec2i{ Boundingbox.x + (Boxsize.x / 2) * Options.Centered, Boundingbox.y };
+                const auto Position = vec2i{ Boundingbox.x + (Boxsize.x / 2) * Options.Centered, Boundingbox.y + (Boxsize.y / 2 - Fontsize / 2) * Options.Centered };
                 drawText_raw(Devicecontext, Position, Boundingbox, String, Stringtexture, {});
             }
 
@@ -812,32 +832,32 @@ namespace Rendering
         }
 
         // If the Image uses a palette, it will be copied to the DC.
-        void drawImage_stretched(HDC Devicecontext, vec4i Destionation, const Texture_t &Image)
+        void drawImage_stretched(HDC Devicecontext, vec4i Destination, const Texture_t &Image)
         {
             ASSERT(isBitmap(Image));
 
             if (std::holds_alternative<std::reference_wrapper<Atlasbitmap_t>>(Image))
             {
                 const auto Wrapper = std::get<std::reference_wrapper<Atlasbitmap_t>>(Image);
-                const auto dstSize = Destionation.cd - Destionation.ab;
+                const auto dstSize = Destination.cd - Destination.ab;
 
                 const auto Subset = Wrapper.get().Subset;
                 const auto srcSize = Subset.cd - Subset.ab;
 
-                Wrapper.get().Copypalette(Devicecontext);
-                StretchBlt(Devicecontext, Destionation.x, Destionation.y, dstSize.x, dstSize.y, HDC(Wrapper.get().Surface), Subset.x, Subset.y, srcSize.x, srcSize.y, SRCCOPY);
+                const auto Context = *std::static_pointer_cast<HDC>(Wrapper.get().Platformhandle);
+                StretchBlt(Devicecontext, Destination.x, Destination.y, dstSize.x, dstSize.y, Context, Subset.x, Subset.y, srcSize.x, srcSize.y, SRCCOPY);
             }
             else
             {
                 const auto Wrapper = std::get<std::reference_wrapper<Realizedbitmap_t>>(Image);
                 const auto srcSize = vec2i{ Wrapper.get().Width, Wrapper.get().Height };
-                const auto dstSize = Destionation.cd - Destionation.ab;
+                const auto dstSize = Destination.cd - Destination.ab;
 
-                Wrapper.get().Copypalette(Devicecontext);
-                StretchBlt(Devicecontext, Destionation.x, Destionation.y, dstSize.x, dstSize.y, HDC(Wrapper.get().Surface), 0, 0, srcSize.x, srcSize.y, SRCCOPY);
+                const auto Context = *std::static_pointer_cast<HDC>(Wrapper.get().Platformhandle);
+                StretchBlt(Devicecontext, Destination.x, Destination.y, dstSize.x, dstSize.y, Context, 0, 0, srcSize.x, srcSize.y, SRCCOPY);
             }
         }
-        void drawImage_tiled(HDC Devicecontext, vec4i Destionation, const Texture_t &Image)
+        void drawImage_tiled(HDC Devicecontext, vec4i Destination, const Texture_t &Image)
         {
             ASSERT(isBitmap(Image));
 
@@ -847,16 +867,16 @@ namespace Rendering
                 const auto Wrapper = std::get<std::reference_wrapper<Atlasbitmap_t>>(Image);
                 const auto Subset = Wrapper.get().Subset;
                 const auto srcSize = Subset.cd - Subset.ab;
+                const auto Context = *std::static_pointer_cast<HDC>(Wrapper.get().Platformhandle);
 
-                for (int y = Destionation.y; y < Destionation.w; y += srcSize.y)
+                for (int y = Destination.y; y < Destination.w; y += srcSize.y)
                 {
-                    for (int x = Destionation.x; x < Destionation.z; x += srcSize.x)
+                    for (int x = Destination.x; x < Destination.z; x += srcSize.x)
                     {
-                        const auto Clampedwidth = (x + srcSize.x > Destionation.z) ? (Destionation.x - x) : srcSize.x;
-                        const auto Clampedheight = (y + srcSize.y > Destionation.w) ? (Destionation.y - y) : srcSize.y;
+                        const auto Clampedwidth = (x + srcSize.x > Destination.z) ? (Destination.x - x) : srcSize.x;
+                        const auto Clampedheight = (y + srcSize.y > Destination.w) ? (Destination.y - y) : srcSize.y;
 
-                        Wrapper.get().Copypalette(Devicecontext);
-                        BitBlt(Devicecontext, x, y, Clampedwidth, Clampedheight, HDC(Wrapper.get().Surface), Subset.x, Subset.y, SRCCOPY);
+                        BitBlt(Devicecontext, x, y, Clampedwidth, Clampedheight, Context, Subset.x, Subset.y, SRCCOPY);
                     }
                 }
             }
@@ -864,16 +884,16 @@ namespace Rendering
             {
                 const auto Wrapper = std::get<std::reference_wrapper<Realizedbitmap_t>>(Image);
                 const auto srcSize = vec2i{ Wrapper.get().Width, Wrapper.get().Height };
+                const auto Context = *std::static_pointer_cast<HDC>(Wrapper.get().Platformhandle);
 
-                for (int y = Destionation.y; y < Destionation.w; y += srcSize.y)
+                for (int y = Destination.y; y < Destination.w; y += srcSize.y)
                 {
-                    for (int x = Destionation.x; x < Destionation.z; x += srcSize.x)
+                    for (int x = Destination.x; x < Destination.z; x += srcSize.x)
                     {
-                        const auto Clampedwidth = (x + srcSize.x > Destionation.z) ? (Destionation.x - x) : srcSize.x;
-                        const auto Clampedheight = (y + srcSize.y > Destionation.w) ? (Destionation.y - y) : srcSize.y;
+                        const auto Clampedwidth = (x + srcSize.x > Destination.z) ? (Destination.x - x) : srcSize.x;
+                        const auto Clampedheight = (y + srcSize.y > Destination.w) ? (Destination.y - y) : srcSize.y;
 
-                        Wrapper.get().Copypalette(Devicecontext);
-                        BitBlt(Devicecontext, x, y, Clampedwidth, Clampedheight, HDC(Wrapper.get().Surface), 0, 0, SRCCOPY);
+                        BitBlt(Devicecontext, x, y, Clampedwidth, Clampedheight, Context, 0, 0, SRCCOPY);
                     }
                 }
             }
@@ -888,16 +908,16 @@ namespace Rendering
                 const auto Subset = Wrapper.get().Subset;
                 const auto Size = Subset.cd - Subset.ab;
 
-                Wrapper.get().Copypalette(Devicecontext);
-                BitBlt(Devicecontext, Position.x, Position.y, Size.x, Size.y, HDC(Wrapper.get().Surface), Subset.x, Subset.y, SRCCOPY);
+                const auto Context = *std::static_pointer_cast<HDC>(Wrapper.get().Platformhandle);
+                BitBlt(Devicecontext, Position.x, Position.y, Size.x, Size.y, Context, Subset.x, Subset.y, SRCCOPY);
             }
             else
             {
                 const auto Wrapper = std::get<std::reference_wrapper<Realizedbitmap_t>>(Image);
                 const auto srcSize = vec2i{ Wrapper.get().Width, Wrapper.get().Height };
 
-                Wrapper.get().Copypalette(Devicecontext);
-                BitBlt(Devicecontext, Position.x, Position.y, srcSize.x, srcSize.y, HDC(Wrapper.get().Surface), 0, 0, SRCCOPY);
+                const auto Context = *std::static_pointer_cast<HDC>(Wrapper.get().Platformhandle);
+                BitBlt(Devicecontext, Position.x, Position.y, srcSize.x, srcSize.y, Context, 0, 0, SRCCOPY);
             }
         }
     }
@@ -938,7 +958,8 @@ namespace Rendering
             }
 
             // Either render to the provided surface or our own.
-            if (!Surface) Devicecontext = CreateCompatibleDC(NULL);
+            const auto ScreenDC = std::unique_ptr<std::remove_pointer<HDC>::type, decltype(&DeleteDC)>(GetDC(nullptr), &DeleteDC);
+            if (!Surface) Devicecontext = CreateCompatibleDC(ScreenDC.get());
             else Devicecontext = HDC(Surface);
 
             // Use inclusive coordinates.
@@ -948,17 +969,19 @@ namespace Rendering
             if (Viewport.ab) SetViewportOrgEx(Devicecontext, -(Viewport.x), -(Viewport.y), nullptr);
 
             // Early exit if we are re-using the provided surface.
-            if (Surface) return;
+            if (Surface) { Clear(Devicecontext, { {0, 0}, {Imagesize} }); return; }
 
             // For downscale AA, we need to adjust our properties.
             Imagesize *= 2;
 
             // Create our oversized bitmap.
-            DIB = Createbitmap(Imagesize.x, Imagesize.y, Colorformat_t::B8G8R8, nullptr);
+            DIB = CreateCompatibleBitmap(ScreenDC.get(), Imagesize.x, Imagesize.y);
             SelectObject(Devicecontext, DIB);
 
-            // GDI defers deletion while it's selected into the DC.
+            // Ensure a clean surface.
             Clear(Devicecontext, { {0, 0}, {Imagesize} });
+
+            // GDI defers deletion while it's selected into the DC.
             DeleteBitmap(DIB);
         }
 
@@ -966,7 +989,7 @@ namespace Rendering
         {
             if (useAA())
             {
-                SetStretchBltMode((HDC)Surface, HALFTONE);
+                //SetStretchBltMode((HDC)Surface, HALFTONE);
                 StretchBlt((HDC)Surface, 0, 0, Imagesize.x / 2, Imagesize.y / 2, Devicecontext, 0, 0, Imagesize.x, Imagesize.y, SRCCOPY);
             }
             else
@@ -984,7 +1007,7 @@ namespace Rendering
                 Size = Upscale(Size);
             }
 
-            GDI::drawEllipse_solid(Devicecontext, Position, Size, Fill);
+            Impl::drawEllipse_solid(Devicecontext, Position, Size, (Fill));
         }
         void drawLine(vec2i Start, vec2i Stop, uint8_t Linewidth, const Texture_t &Texture)
         {
@@ -995,7 +1018,7 @@ namespace Rendering
                 Linewidth *= 2;
             }
 
-            GDI::drawLine(Devicecontext, Start, Stop, Linewidth, Texture);
+            Impl::drawLine(Devicecontext, Start, Stop, Linewidth, (Texture));
         }
         void drawRectangle(vec2i Topleft, vec2i Bottomright, uint8_t Rounding, const Texture_t &Texture)
         {
@@ -1005,7 +1028,7 @@ namespace Rendering
                 Bottomright = Upscale(Bottomright);
             }
 
-            GDI::drawRectangle_solid(Devicecontext, Topleft, Bottomright, Rounding, Texture);
+            Impl::drawRectangle_solid(Devicecontext, Topleft, Bottomright, Rounding, (Texture));
         }
         void drawArc(vec2i Centerpoint, vec2i Angles, uint8_t Radius, uint8_t Linewidth, const Texture_t &Texture)
         {
@@ -1016,8 +1039,7 @@ namespace Rendering
                 Radius *= 2;
             }
 
-            // NOTE(tcn): To draw an arch going between (100, 0), (50, 50), (100, 100): drawArc(HDC, {50, 50}, {0, 90}, 50, ...)
-            return GDI::drawArc(Devicecontext, Centerpoint, Angles, Radius, Linewidth, Texture);
+            return Impl::drawArc(Devicecontext, Centerpoint, Angles, Radius, Linewidth, (Texture));
         }
         void drawEllipse(vec2i Position, vec2i Size, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline)
         {
@@ -1028,7 +1050,7 @@ namespace Rendering
                 Linewidth *= 2;
             }
 
-            GDI::drawEllipse(Devicecontext, Position, Size, Fill, Linewidth, Outline);
+            Impl::drawEllipse(Devicecontext, Position, Size, (Fill), Linewidth, (Outline));
         }
         void drawRectangle(vec2i Topleft, vec2i Bottomright, uint8_t Rounding, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline)
         {
@@ -1039,7 +1061,7 @@ namespace Rendering
                 Bottomright = Upscale(Bottomright);
             }
 
-            GDI::drawRectangle(Devicecontext, Topleft, Bottomright, Rounding, Fill, Linewidth, Outline);
+            Impl::drawRectangle(Devicecontext, Topleft, Bottomright, Rounding, (Fill), Linewidth, (Outline));
         }
 
         // For some backends; transparency can be slow, so try to provide a background if possible.
@@ -1054,7 +1076,7 @@ namespace Rendering
 
             // Resolve the GDI object.
             const auto RAII = Createfont(Devicecontext, Fontname, Fontsize);
-            GDI::drawText(Devicecontext, Position, String, Stringtexture, Backgroundtexture, Options);
+            Impl::drawText(Devicecontext, Position, String, (Stringtexture), (Backgroundtexture), Options);
         }
         void drawText(vec4i Boundingbox, std::wstring_view String, const Texture_t &Stringtexture, uint8_t Fontsize, std::string_view Fontname, const Texture_t &Backgroundtexture, Textoptions_t Options)
         {
@@ -1068,7 +1090,7 @@ namespace Rendering
 
             // Resolve the GDI object.
             const auto RAII = Createfont(Devicecontext, Fontname, Fontsize);
-            GDI::drawText(Devicecontext, Boundingbox, String, Stringtexture, Backgroundtexture, Options);
+            Impl::drawText(Devicecontext, Boundingbox, String, Fontsize, (Stringtexture), (Backgroundtexture), Options);
         }
 
         // Takes any contigious array for simplicity.
@@ -1081,18 +1103,18 @@ namespace Rendering
                 for (size_t i = 0; i < Points.size(); ++i)
                     GDIPoints[i] = Upscale(Points[i]);
 
-                GDI::drawPath(Devicecontext, GDIPoints, Linewidth * 2, Texture);
+                Impl::drawPath(Devicecontext, GDIPoints, Linewidth * 2, (Texture));
             }
             else
             {
                 const std::vector<POINT> GDIPoints(Points.begin(), Points.end());
-                GDI::drawPath(Devicecontext, GDIPoints, Linewidth, Texture);
+                Impl::drawPath(Devicecontext, GDIPoints, Linewidth, (Texture));
             }
         }
         void drawPolygon(std::span<const vec2i> Points, const Texture_t &Fill, uint8_t Linewidth, const Texture_t &Outline)
         {
             // Need to close the polygon manually.
-            const auto Close = Points.first<1>()[0] != Points.first<1>()[0];
+            const auto Close = Points.first<1>()[0] != Points.last<1>()[0];
 
             if (useAA())
             {
@@ -1103,38 +1125,38 @@ namespace Rendering
 
                 if (Close) GDIPoints[Points.size()] = Upscale(Points[0]);
 
-                GDI::drawPolygon(Devicecontext, GDIPoints, Fill, Linewidth * 2, Outline);
+                Impl::drawPolygon(Devicecontext, GDIPoints, (Fill), Linewidth * 2, (Outline));
             }
             else
             {
                 if (!Close)
                 {
                     const std::vector<POINT> GDIPoints(Points.begin(), Points.end());
-                    GDI::drawPolygon(Devicecontext, GDIPoints, Fill, Linewidth, Outline);
+                    Impl::drawPolygon(Devicecontext, GDIPoints, (Fill), Linewidth, (Outline));
                 }
                 else
                 {
                     std::vector<POINT> GDIPoints(Points.size() + Close);
                     GDIPoints.assign(Points.begin(), Points.end());
-                    GDIPoints[Points.size()] = Points[0];
+                    GDIPoints.emplace_back(Points[0]);
 
-                    GDI::drawPolygon(Devicecontext, GDIPoints, Fill, Linewidth, Outline);
+                    Impl::drawPolygon(Devicecontext, GDIPoints, (Fill), Linewidth, (Outline));
                 }
             }
         }
 
         // Images can also be used for drawing gradients and other such background textures.
-        void drawImage_stretched(vec4i Destionation, const Texture_t &Image)
+        void drawImage_stretched(vec4i Destination, const Texture_t &Image)
         {
-            GDI::drawImage_stretched(Devicecontext, Destionation, Image);
+            Impl::drawImage_stretched(Devicecontext, Destination, (Image));
         }
-        void drawImage_tiled(vec4i Destionation, const Texture_t &Image)
+        void drawImage_tiled(vec4i Destination, const Texture_t &Image)
         {
-            GDI::drawImage_tiled(Devicecontext, Destionation, Image);
+            Impl::drawImage_tiled(Devicecontext, Destination, (Image));
         }
         void drawImage(vec2i Position, const Texture_t &Image)
         {
-            GDI::drawImage(Devicecontext, Position, Image);
+            Impl::drawImage(Devicecontext, Position, (Image));
         }
     };
 
@@ -1143,3 +1165,4 @@ namespace Rendering
         return std::make_unique<GDIRenderer_t>(Viewport, Surface);
     }
 }
+#endif
