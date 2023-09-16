@@ -22,6 +22,15 @@
 
 namespace Rendering
 {
+    // Select a renderer.
+    #define SW_RENDERER 0
+    #define GDI_RENDERER 1
+    #define EGL_RENDERER 2
+
+    #if !defined(RENDERER)
+    #define RENDERER GDI_RENDERER
+    #endif
+
     // No need to have a separate header for this.
     extern Handle_t getFont(const std::string &Name, uint8_t Size);
     extern void Registerfont(Blob_view_t Fontdata);
@@ -74,4 +83,35 @@ namespace Rendering
 
     // Implemented in a subdirectory.
     extern std::unique_ptr<Interface_t> Createrenderer(const vec4i &Viewport, Handle_t Surface);
+}
+
+// Forward declarations for different backends.
+namespace Rendering
+{
+    #if (RENDERER == GDI_RENDERER)
+    struct GDIBitmap_t final : Realizedbitmap_t
+    {
+        std::unique_ptr<RGBQUAD[]> Palettestorage{};
+        bool isPalette() const
+        {
+            return Pixelformat == Colorformat_t::PALETTE4 || Pixelformat == Colorformat_t::PALETTE8;
+        }
+
+        // Renderer-defined operations, assumes Bitmapheader_t::Paletteformat
+        virtual void Animatepalette(std::span<uint32_t> Newpalette);
+        virtual void Animatepalette(uint8_t Rotationoffset);
+        virtual void Reinitializepalette();
+
+        GDIBitmap_t(const Bitmapheader_t &Info, const std::shared_ptr<void> &Handle) noexcept;
+        GDIBitmap_t(const Palettebitmap_t *Bitmap) noexcept;
+        GDIBitmap_t(std::string_view Filepath) noexcept;
+        GDIBitmap_t(GDIBitmap_t &&Other) noexcept;
+        GDIBitmap_t(QOIBitmap_t *Bitmap) noexcept;
+        GDIBitmap_t() = default;
+
+        // Implicitly deleted, but to make sure it stays deleted.
+        GDIBitmap_t(const GDIBitmap_t &Other) = delete;
+    };
+    #endif
+
 }

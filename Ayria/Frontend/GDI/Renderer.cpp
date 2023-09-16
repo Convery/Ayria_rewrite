@@ -16,7 +16,7 @@
 #include <Utilities/Utilities.hpp>
 #include "../Rendering.hpp"
 
-#if defined (_WIN32)
+#if defined (_WIN32) && (RENDERER == GDI_RENDERER)
 namespace Rendering
 {
     // Simpler management using RAII.

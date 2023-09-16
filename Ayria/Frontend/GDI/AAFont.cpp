@@ -7,7 +7,7 @@
 #include <Utilities/Utilities.hpp>
 #include "../Rendering.hpp"
 
-#if defined (_WIN32)
+#if defined (_WIN32) && (RENDERER == GDI_RENDERER)
 namespace Rendering
 {
     Handle_t getFont(const std::string &Name, uint8_t Size)

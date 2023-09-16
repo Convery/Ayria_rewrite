@@ -13,7 +13,7 @@
 #include <Utilities/Utilities.hpp>
 #include "../Rendering.hpp"
 
-#if defined (_WIN32)
+#if defined (_WIN32) && (RENDERER == GDI_RENDERER)
 namespace Rendering
 {
     // Framebuffers can generally be greatly improved by platform specific implementations.
@@ -57,22 +57,8 @@ namespace Rendering
         }
     }
 
-    // As we already export the bitmap creation, we mainly just do parsing here.
-    struct GDIBitmap_t final : Realizedbitmap_t
-    {
-        // std::shared_ptr<HDC> Platformhandle{};
-
-        // Internal storage if needed.
-        std::unique_ptr<RGBQUAD[]> Palettestorage{};
-
-        // Helpers.
-        bool isPalette() const
-        {
-            return Pixelformat == Colorformat_t::PALETTE4 || Pixelformat == Colorformat_t::PALETTE8;
-        }
-
-        // Renderer-defined operations, assumes Bitmapheader_t::Paletteformat
-        void Animatepalette(std::span<uint32_t> Newpalette)
+    // Renderer-defined operations, assumes Bitmapheader_t::Paletteformat
+    void GDIBitmap_t::Animatepalette(std::span<uint32_t> Newpalette)
         {
             ASSERT(Platformhandle && isPalette());
             sPalette = Newpalette;
@@ -80,7 +66,7 @@ namespace Rendering
             const auto Context = HDC(Platformhandle.get());
             SetDIBColorTable(Context, 0, UINT(sPalette.size()), (RGBQUAD *)sPalette.data());
         }
-        void Animatepalette(uint8_t Rotationoffset)
+    void GDIBitmap_t::Animatepalette(uint8_t Rotationoffset)
         {
             ASSERT(Platformhandle && isPalette());
             std::ranges::rotate(sPalette, sPalette.begin() + Rotationoffset);
@@ -88,7 +74,7 @@ namespace Rendering
             const auto Context = HDC(Platformhandle.get());
             SetDIBColorTable(Context, 0, UINT(sPalette.size()), (RGBQUAD *)sPalette.data());
         }
-        void Reinitializepalette()
+    void GDIBitmap_t::Reinitializepalette()
         {
             ASSERT(Platformhandle && isPalette());
 
@@ -96,8 +82,9 @@ namespace Rendering
             SetDIBColorTable(Context, 0, UINT(sPalette.size()), (RGBQUAD *)sPalette.data());
         }
 
-        GDIBitmap_t(const Bitmapheader_t &Info, const std::shared_ptr<void> &Handle) noexcept : Realizedbitmap_t(Info, Handle) {}
-        GDIBitmap_t(const Palettebitmap_t *Bitmap) noexcept : Realizedbitmap_t(Bitmap)
+    // As we already export the bitmap creation, we mainly just do parsing here.
+    GDIBitmap_t::GDIBitmap_t(const Bitmapheader_t &Info, const std::shared_ptr<void> &Handle) noexcept : Realizedbitmap_t(Info, Handle) {}
+    GDIBitmap_t::GDIBitmap_t(const Palettebitmap_t *Bitmap) noexcept : Realizedbitmap_t(Bitmap)
         {
             const auto [DIB, pBuffer] = Createframebuffer(Width, Height, Palettecount ? (Palettecount > 16 ? Colorformat_t::PALETTE8 : Colorformat_t::PALETTE4) : Colorformat_t(Pixelformat) );
             const auto Pixels = Bitmap->getPixels();
@@ -202,17 +189,17 @@ namespace Rendering
             // Clean-up automatically when destroyed.
             Platformhandle = std::shared_ptr<void>(Devicecontext, [](HDC DC) { DeleteDC(DC); });
         }
-        GDIBitmap_t(std::string_view Filepath) noexcept : Realizedbitmap_t(Filepath)
+    GDIBitmap_t::GDIBitmap_t(std::string_view Filepath) noexcept : Realizedbitmap_t(Filepath)
         {
             // TODO(tcn): See if we can get away with not implementing this.
             assert(false);
         }
-        GDIBitmap_t(GDIBitmap_t &&Other) noexcept : Realizedbitmap_t(Other)
+    GDIBitmap_t::GDIBitmap_t(GDIBitmap_t &&Other) noexcept : Realizedbitmap_t(Other)
         {
             Palettestorage = std::move(Other.Palettestorage);
             Other.Palettestorage.reset();
         }
-        GDIBitmap_t(QOIBitmap_t *Bitmap) noexcept : Realizedbitmap_t(Bitmap)
+    GDIBitmap_t::GDIBitmap_t(QOIBitmap_t *Bitmap) noexcept : Realizedbitmap_t(Bitmap)
         {
             const auto [DIB, pBuffer] = Createframebuffer(Width, Height, Colorformat_t(Pixelformat));
             const auto Pixels = Bitmap->getPixels();
@@ -246,11 +233,6 @@ namespace Rendering
             // Clean-up automatically when destroyed.
             Platformhandle = std::shared_ptr<void>(Devicecontext, [](HDC DC) { DeleteDC(DC); });
         }
-        GDIBitmap_t() = default;
-
-        // Should have been implicitly deleted, but for the future.
-        GDIBitmap_t(const GDIBitmap_t &Other) = delete;
-    };
 
     // Wrappers.
     inline std::unique_ptr<Realizedbitmap_t> Realize(const Bitmapheader_t &Info, const std::shared_ptr<void> &Handle)
