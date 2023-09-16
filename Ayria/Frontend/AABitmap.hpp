@@ -187,6 +187,7 @@ namespace Rendering
 
     // For when we don't want to embed anything, result resolution being Steps x Height.
     extern std::unique_ptr<Realizedbitmap_t> Creategradient(ARGB_t First, ARGB_t Last, uint16_t Steps, bool isAnimated = false, uint8_t Smoothfactor = 0, uint16_t Height = 1);
+    extern std::unique_ptr<Realizedbitmap_t> Creategradient_mirror(ARGB_t First, ARGB_t Last, uint16_t Steps, bool isAnimated = false, uint8_t Smoothfactor = 0, uint16_t Height = 1);
 
     // We generally don't use 32-BPP, so create a mask from an image for transparency.
     extern std::unique_ptr<Realizedbitmap_t> Createmask(const Atlasbitmap_t *Source, ARGB_t Backgroundcolor);

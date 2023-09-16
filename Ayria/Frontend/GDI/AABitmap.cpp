@@ -270,7 +270,7 @@ namespace Rendering
         return std::make_unique<GDIBitmap_t>(Bitmap);
     }
 
-    // For when we don't want to embed anything, result resolution being Steps * Height.
+    // For when we don't want to embed anything, result resolution being (Steps + Steps * isMirror) * Height.
     inline std::unique_ptr<Realizedbitmap_t> Creategradient(ARGB_t First, ARGB_t Last, uint16_t Steps, bool isAnimated, uint8_t Smoothfactor, uint16_t Height)
     {
         ASSERT(Steps && !(isAnimated && Steps > 256));
@@ -309,8 +309,7 @@ namespace Rendering
             {
                 for (size_t i = 0; i < Steps; ++i)
                 {
-                    const auto Normalized = static_cast<float>(i) / static_cast<float>(Steps - 1);
-                    const auto X = Normalized * 2.0f - 1.0f;
+                    const auto X = static_cast<float>(i) / static_cast<float>(Steps - 1);
                     const auto F = [X, Smoothfactor]() -> float
                     {
                         if (Smoothfactor == 1) return Blend::Smoothstep<1>(X);
@@ -324,22 +323,26 @@ namespace Rendering
                     }();
 
                     Bitmap.Palettestorage[i] = {
-                        static_cast<uint8_t>(First.B + Delta.B * i + Delta.B * F),
-                        static_cast<uint8_t>(First.G + Delta.G * i + Delta.G * F),
-                        static_cast<uint8_t>(First.R + Delta.R * i + Delta.R * F)
+                        (uint8_t)cmp::clamp(int(First.B + Delta.B * i + Delta.B * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.G + Delta.G * i + Delta.G * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.R + Delta.R * i + Delta.R * F), 0, 0xFF)
                     };
                 }
             }
 
-            // GDI does not support 2-bits per pixel, and 1 is pretty useless for a gradient.
-            for (uint32_t y = 0; y < Height; ++y)
+            // Create the first scanline.
+            for (uint32_t x = 0; x < Steps; ++x)
             {
-                const auto Offset = y * Steps;
-                for (uint32_t x = 0; x < Steps; ++x)
-                {
-                    if (std::bit_width(Steps) > 4) pBuffer[Offset + x] = uint8_t(x);
-                    else pBuffer[(Offset + x) >> 1] |= uint8_t(x << (4 * !(x & 1)));
-                }
+                // GDI does not support 2-bits per pixel, and 1 is pretty useless for a gradient.
+                if (std::bit_width(Steps) > 4) pBuffer[x] = uint8_t(x);
+                else pBuffer[x >> 1] |= uint8_t(x << (4 * !(x & 1)));
+            }
+
+            // Simply copy for the rest of the image.
+            for (uint32_t y = 1; y < Height; ++y)
+            {
+                if (std::bit_width(Steps) > 4) std::memcpy(&pBuffer[Steps * y], pBuffer.data(), Steps);
+                else std::memcpy(&pBuffer[Steps / 2 * y], pBuffer.data(), Steps / 2);
             }
         }
         else
@@ -347,47 +350,197 @@ namespace Rendering
             // Simple lerp.
             if (Smoothfactor == 0)
             {
-                for (uint32_t y = 0; y < Height; ++y)
+                // Create the first scanline.
+                for (size_t x = 0; x < Steps; ++x)
                 {
-                    const auto Offset = y * Steps;
-                    for (size_t x = 0; x < Steps; ++x)
-                    {
-                        ((RGBTRIPLE *)pBuffer.data())[Offset + x] = {
-                            static_cast<uint8_t>(First.B + x * Delta.B),
-                            static_cast<uint8_t>(First.G + x * Delta.G),
-                            static_cast<uint8_t>(First.R + x * Delta.R)
-                        };
-                    }
+                    ((RGBTRIPLE *)pBuffer.data())[x] = {
+                        static_cast<uint8_t>(First.B + x * Delta.B),
+                        static_cast<uint8_t>(First.G + x * Delta.G),
+                        static_cast<uint8_t>(First.R + x * Delta.R)
+                    };
                 }
             }
             else
             {
-                for (uint32_t y = 0; y < Height; ++y)
+                // Create the first scanline.
+                for (size_t x = 0; x < Steps; ++x)
                 {
-                    const auto Offset = y * Steps;
-                    for (size_t x = 0; x < Steps; ++x)
+                    const auto X = static_cast<float>(x) / static_cast<float>(Steps - 1);
+                    const auto F = [X, Smoothfactor]() -> float
                     {
-                        const auto Normalized = static_cast<float>(x) / static_cast<float>(Steps - 1);
-                        const auto X = Normalized * 2.0f - 1.0f;
-                        const auto F = [X, Smoothfactor]() -> float
-                        {
-                            if (Smoothfactor == 1) return Blend::Smoothstep<1>(X);
-                            if (Smoothfactor == 2) return Blend::Smoothstep<2>(X);
-                            if (Smoothfactor == 3) return Blend::Smoothstep<3>(X);
-                            if (Smoothfactor == 4) return Blend::Smoothstep<4>(X);
-                            if (Smoothfactor == 5) return Blend::Smoothstep<5>(X);
-                            if (Smoothfactor == 6) return Blend::Smoothstep<6>(X);
+                        if (Smoothfactor == 1) return Blend::Smoothstep<1>(X);
+                        if (Smoothfactor == 2) return Blend::Smoothstep<2>(X);
+                        if (Smoothfactor == 3) return Blend::Smoothstep<3>(X);
+                        if (Smoothfactor == 4) return Blend::Smoothstep<4>(X);
+                        if (Smoothfactor == 5) return Blend::Smoothstep<5>(X);
+                        if (Smoothfactor == 6) return Blend::Smoothstep<6>(X);
 
-                            std::unreachable();
-                        }();
+                        std::unreachable();
+                    }();
 
-                        ((RGBTRIPLE *)pBuffer.data())[Offset + x] = {
-                            static_cast<uint8_t>(First.B + Delta.B * x + Delta.B * F),
-                            static_cast<uint8_t>(First.G + Delta.G * x + Delta.G * F),
-                            static_cast<uint8_t>(First.R + Delta.R * x + Delta.R * F)
-                        };
-                    }
+                    ((RGBTRIPLE *)pBuffer.data())[x] = {
+                        (uint8_t)cmp::clamp(int(First.B + Delta.B * x + Delta.B * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.G + Delta.G * x + Delta.G * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.R + Delta.R * x + Delta.R * F), 0, 0xFF)
+                    };
                 }
+
+                // Simply copy for the rest of the image.
+                for (uint32_t y = 1; y < Height; ++y)
+                {
+                    std::memcpy(&pBuffer[Steps * sizeof(RGBTRIPLE) * y], pBuffer.data(), Steps * sizeof(RGBTRIPLE));
+                }
+            }
+        }
+
+        // Create a context with the same properties as the display.
+        const auto Devicecontext = CreateCompatibleDC(nullptr);
+        SelectObject(Devicecontext, DIB);
+
+        // The framebuffer was null-initialized, so we need to update it.
+        if (Palettecount) SetDIBColorTable(Devicecontext, 0, Palettecount, Bitmap.Palettestorage.get());
+
+        // GDI is refcounted so deletes are deferred while the context exists.
+        DeleteObject(DIB);
+
+        // Clean-up automatically when destroyed.
+        Bitmap.Platformhandle = std::shared_ptr<void>(Devicecontext, [](HDC DC) { DeleteDC(DC); });
+
+        return std::make_unique<GDIBitmap_t>(std::move(Bitmap));
+    }
+    inline std::unique_ptr<Realizedbitmap_t> Creategradient_mirror(ARGB_t First, ARGB_t Last, uint16_t Steps, bool isAnimated, uint8_t Smoothfactor, uint16_t Height)
+    {
+        ASSERT(Steps && !(isAnimated && Steps > 256));
+
+        const ARGB_t Delta{ 0xFF, uint8_t((Last.R - First.R) / (Steps - 1)), uint8_t((Last.G - First.G) / (Steps - 1)), uint8_t((Last.B - First.B) / (Steps - 1)) };
+        const auto Pixelformat = isAnimated ? (Steps <= 16 ? Colorformat_t::PALETTE4 : Colorformat_t::PALETTE8) : Colorformat_t::B8G8R8;
+        const auto [DIB, pBuffer] = Createframebuffer(Steps * 2, Height, Colorformat_t(Pixelformat));
+        const auto Palettecount = isAnimated * Steps;
+
+        GDIBitmap_t Bitmap{};
+        Bitmap.Paletteformat = (uint16_t)Colorformat_t::B8G8R8A8 * isAnimated;
+        Bitmap.Pixelformat = (uint16_t)Pixelformat;
+        Bitmap.Palettecount = Palettecount;
+        Bitmap.Width = uint16_t(Steps * 2);
+        Bitmap.Height = Height;
+
+        // As each pixel (hopefully) represents a unique color, palettes are only useful for animations.
+        if (isAnimated)
+        {
+            Bitmap.Palettestorage = std::make_unique<RGBQUAD[]>(Palettecount);
+            Bitmap.sPalette = { (uint32_t *)Bitmap.Palettestorage.get(), size_t(Palettecount) };
+
+            // Simple lerp.
+            if (Smoothfactor == 0)
+            {
+                for (size_t i = 0; i < Steps; ++i)
+                {
+                    Bitmap.Palettestorage[i] = {
+                        static_cast<uint8_t>(First.B + i * Delta.B),
+                        static_cast<uint8_t>(First.G + i * Delta.G),
+                        static_cast<uint8_t>(First.R + i * Delta.R)
+                    };
+                }
+            }
+            else
+            {
+                for (size_t i = 0; i < Steps; ++i)
+                {
+                    const auto X = static_cast<float>(i) / static_cast<float>(Steps - 1);
+                    const auto F = [X, Smoothfactor]() -> float
+                    {
+                        if (Smoothfactor == 1) return Blend::Smoothstep<1>(X);
+                        if (Smoothfactor == 2) return Blend::Smoothstep<2>(X);
+                        if (Smoothfactor == 3) return Blend::Smoothstep<3>(X);
+                        if (Smoothfactor == 4) return Blend::Smoothstep<4>(X);
+                        if (Smoothfactor == 5) return Blend::Smoothstep<5>(X);
+                        if (Smoothfactor == 6) return Blend::Smoothstep<6>(X);
+
+                        std::unreachable();
+                    }();
+
+                    Bitmap.Palettestorage[i] = {
+                        (uint8_t)cmp::clamp(int(First.B + Delta.B * i + Delta.B * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.G + Delta.G * i + Delta.G * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.R + Delta.R * i + Delta.R * F), 0, 0xFF)
+                    };
+                }
+            }
+
+            // Create the first scanline.
+            for (uint32_t x = 0; x < Steps; ++x)
+            {
+                // GDI does not support 2-bits per pixel, and 1 is pretty useless for a gradient.
+                if (std::bit_width(Steps) > 4) pBuffer[x] = uint8_t(x);
+                else pBuffer[x >> 1] |= uint8_t(x << (4 * !(x & 1)));
+
+                if (std::bit_width(Steps) > 4) pBuffer[Steps * 2 - x - 1] = uint8_t(x);
+                else pBuffer[(Steps * 2 - x - 1) >> 1] |= uint8_t(x << (4 * !(x & 1)));
+            }
+
+            // Simply copy for the rest of the image.
+            for (uint32_t y = 1; y < Height; ++y)
+            {
+                if (std::bit_width(Steps) > 4) std::memcpy(&pBuffer[2 * Steps * y], pBuffer.data(), 2 * Steps);
+                else std::memcpy(&pBuffer[Steps * y], pBuffer.data(), Steps);
+            }
+        }
+        else
+        {
+            // Simple lerp.
+            if (Smoothfactor == 0)
+            {
+                // Create the first scanline.
+                for (size_t x = 0; x < Steps; ++x)
+                {
+                    ((RGBTRIPLE *)pBuffer.data())[x] = {
+                        static_cast<uint8_t>(First.B + x * Delta.B),
+                        static_cast<uint8_t>(First.G + x * Delta.G),
+                        static_cast<uint8_t>(First.R + x * Delta.R)
+                    };
+                    ((RGBTRIPLE *)pBuffer.data())[Steps * 2 - x - 1] = {
+                        static_cast<uint8_t>(First.B + x * Delta.B),
+                        static_cast<uint8_t>(First.G + x * Delta.G),
+                        static_cast<uint8_t>(First.R + x * Delta.R)
+                    };
+                }
+            }
+            else
+            {
+                // Create the first scanline.
+                for (size_t x = 0; x < Steps; ++x)
+                {
+                    const auto X = static_cast<float>(x) / static_cast<float>(Steps - 1);
+                    const auto F = [X, Smoothfactor]() -> float
+                    {
+                        if (Smoothfactor == 1) return Blend::Smoothstep<1>(X);
+                        if (Smoothfactor == 2) return Blend::Smoothstep<2>(X);
+                        if (Smoothfactor == 3) return Blend::Smoothstep<3>(X);
+                        if (Smoothfactor == 4) return Blend::Smoothstep<4>(X);
+                        if (Smoothfactor == 5) return Blend::Smoothstep<5>(X);
+                        if (Smoothfactor == 6) return Blend::Smoothstep<6>(X);
+
+                        std::unreachable();
+                    }();
+
+                    ((RGBTRIPLE *)pBuffer.data())[x] = {
+                        (uint8_t)cmp::clamp(int(First.B + Delta.B * x + Delta.B * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.G + Delta.G * x + Delta.G * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.R + Delta.R * x + Delta.R * F), 0, 0xFF)
+                    };
+
+                    ((RGBTRIPLE *)pBuffer.data())[Steps * 2 - x - 1] = {
+                        (uint8_t)cmp::clamp(int(First.B + Delta.B * x + Delta.B * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.G + Delta.G * x + Delta.G * F), 0, 0xFF),
+                        (uint8_t)cmp::clamp(int(First.R + Delta.R * x + Delta.R * F), 0, 0xFF)
+                    };
+                }
+            }
+
+            // Simply copy for the rest of the image.
+            for (uint32_t y = 1; y < Height; ++y)
+            {
+                std::memcpy(&pBuffer[Steps * 2 * sizeof(RGBTRIPLE) * y], pBuffer.data(), Steps * 2 * sizeof(RGBTRIPLE));
             }
         }
 
