@@ -242,13 +242,13 @@ namespace Blend
             return Value * Value * (3.0f - 2.0f * Value);
 
         if constexpr (N == 2) // f(x) = 6x^5 - 15x^4 + 10x^3
-            return Value * Value * Value * (3.0f * Value * (2.0f * Value - 5.0f) + 10.0f);
+              return Value * Value * Value * (Value * (6.0f * Value - 15.0f) + 10.0f);
 
         if constexpr (N == 3) // f(x) = -20x^7 + 70x^6 - 84x^5 + 35x^4
             return Value * Value * Value * Value * (35.0f - 2 * Value * (5.0f * Value * (2.0f * Value - 7.0f) + 42.0f));
 
         if constexpr (N == 4) // f(x) = 70x^9 - 315x^8 + 540x^7 - 420x^6 + 126x^5
-            return Value * Value * Value * Value * Value * (5.0f * Value * (Value *(7.0f * Value * (2.0f * Value - 9.0f) + 108.0f) - 84.0f) + 126.0f);
+            return Value * Value * Value * Value * Value * (5.0f * Value * (Value * (7.0f * Value * (2.0f * Value - 9.0f) + 108.0f) - 84.0f) + 126.0f);
 
         if constexpr (N == 5) // f(x) = -252x^11 + 1386x^10 - 3080x^9 + 3465x^8 - 1980x^7 + 462x^6
             return Value * Value * Value * Value * Value * Value * (Value * (-7.0f * Value * (2.0f * Value * (9.0f * Value * (2.0f * Value - 11.0f) + 220.0f) - 495.0f) - 1980.0f) + 462.0f);
