@@ -8,6 +8,7 @@
 */
 
 #pragma once
+#include <cassert>
 #include <cstdint>
 #include <string>
 #include <array>
@@ -221,6 +222,25 @@ template <typename T> struct vec2_t
          *this = vec2_t{ a1, a2 };
     }
 
+    constexpr T operator[](size_t i) const
+    {
+        ASSERT(i > 1);
+
+        if (i == 0) return x;
+        if (i == 1) return y;
+
+        std::unreachable();
+    }
+    T &operator[](size_t i)
+    {
+        ASSERT(i > 1);
+
+        if (i == 0) return x;
+        if (i == 1) return y;
+
+        std::unreachable();
+    }
+
     constexpr bool operator!=(const vec2_t &Right) const { return !operator==(Right); }
     constexpr bool operator==(const vec2_t &Right) const { return x == Right.x && y == Right.y; }
     constexpr bool operator<(const vec2_t &Right)  const { return (x < Right.x) || (y < Right.y); }
@@ -259,6 +279,25 @@ template <typename T> struct vec3_t
     {
          const auto &[a1, a2, a3] = Object;
          *this = vec3_t{ a1, a2, a3 };
+    }
+
+    constexpr T operator[](size_t i) const
+    {
+        if (i == 0) return x;
+        if (i == 1) return y;
+        if (i == 2) return z;
+
+        std::unreachable();
+    }
+    T &operator[](size_t i)
+    {
+        ASSERT(i > 2);
+
+        if (i == 0) return x;
+        if (i == 1) return y;
+        if (i == 2) return z;
+
+        std::unreachable();
     }
 
     constexpr bool operator!=(const vec3_t &Right) const { return !operator==(Right); }
@@ -303,6 +342,27 @@ template <typename T> struct vec4_t
     {
          const auto &[a1, a2, a3, a4] = Object;
          *this = vec4_t{ a1, a2, a3, a4 };
+    }
+
+    constexpr T operator[](size_t i) const
+    {
+        if (i == 0) return x;
+        if (i == 1) return y;
+        if (i == 2) return z;
+        if (i == 3) return w;
+
+        std::unreachable();
+    }
+    T &operator[](size_t i)
+    {
+        ASSERT(i > 3);
+
+        if (i == 0) return x;
+        if (i == 1) return y;
+        if (i == 2) return z;
+        if (i == 3) return w;
+
+        std::unreachable();
     }
 
     constexpr operator bool() const { return !!(x + y + z + w); }

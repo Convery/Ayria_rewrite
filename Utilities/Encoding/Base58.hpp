@@ -148,7 +148,7 @@ namespace Base58
                 Buffer[Outputposition++] = 0;
 
             std::ranges::reverse(Buffer.begin(), Buffer.begin() + Outputposition);
-            return cmp::resize_array<uint8_t, Encodesize(N), Decodesize(N)>(Buffer);
+            return cmp::resizeArray<Decodesize(N)>(Buffer);
         }
         template <cmp::Byte_t T, size_t N = std::dynamic_extent> requires(N == std::dynamic_extent) constexpr auto Decode(std::span<const T, N> Input)
         {
@@ -198,7 +198,7 @@ namespace Base58
     }
     template <cmp::Char_t T, size_t N> constexpr bool isValid(const T(&Input)[N])
     {
-        return isValid(cmp::toArray(Input));
+        return isValid(cmp::stripNullchar(Input));
     }
 
     // Dynamically selects the proper storage type.
@@ -224,10 +224,10 @@ namespace Base58
     // String literal helper.
     template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
     {
-        return Encode(cmp::toArray(Input));
+        return Encode(cmp::stripNullchar(Input));
     }
     template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
     {
-        return Decode(cmp::toArray(Input));
+        return Decode(cmp::stripNullchar(Input));
     }
 }

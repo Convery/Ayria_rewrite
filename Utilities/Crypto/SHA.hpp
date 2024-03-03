@@ -268,10 +268,10 @@ namespace Hash
     // String literals.
     template <cmp::Char_t T, size_t N> constexpr cmp::Array_t<uint8_t, 32> SHA256(const T(&Input)[N])
     {
-        return SHA256(cmp::getBytes(cmp::toArray(Input)));
+        return SHA256(cmp::getBytes(cmp::stripNullchar(Input)));
     }
     template <cmp::Char_t T, size_t N> constexpr cmp::Array_t<uint8_t, 64> SHA512(const T(&Input)[N])
     {
-        return SHA512(cmp::getBytes(cmp::toArray(Input)));
+        return SHA512(cmp::getBytes(cmp::stripNullchar(Input)));
     }
 }

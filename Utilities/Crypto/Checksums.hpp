@@ -244,7 +244,7 @@ namespace Hash
         }
         template <typename F, cmp::Char_t T, size_t N> requires (!cmp::Range_t<T>) constexpr auto doHash(F &&Func, const T(&Input)[N])
         {
-            return Func(cmp::getBytes(cmp::toArray(Input)));
+            return Func(cmp::getBytes(cmp::stripNullchar(Input)));
         }
     }
 

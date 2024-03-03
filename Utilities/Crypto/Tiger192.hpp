@@ -706,6 +706,6 @@ namespace Hash
     // String literals.
     template <cmp::Char_t T, size_t N> constexpr cmp::Array_t<uint8_t, 24> Tiger192(const T(&Input)[N])
     {
-        return Tiger192(cmp::getBytes(cmp::toArray(Input)));
+        return Tiger192(cmp::getBytes(cmp::stripNullchar(Input)));
     }
 }

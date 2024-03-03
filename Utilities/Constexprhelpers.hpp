@@ -18,16 +18,16 @@
 // Lookups do not work properly in msvc, copy this into each module that needs it.
 #pragma region Copy_me
 
-// Combine arrays, no idea why the STL doesn't provide this..
+// Combine arrays, for cleaner code.
 template <typename T, size_t N, size_t M>
-constexpr std::array<T, N + M> operator+(const std::array<T, N> &Left, const std::array<T, M> &Right)
+constexpr auto operator+(const std::array<T, N> &Left, const std::array<T, M> &Right)
 {
-    return[]<size_t ...LIndex, size_t ...RIndex>(const std::array<T, N> &Left, const std::array<T, M> &Right,
-        std::index_sequence<LIndex...>, std::index_sequence<RIndex...>)
+    return[]<size_t... LIndex, size_t... RIndex>(const std::array<T, N> &Left, const std::array<T, M> &Right, std::index_sequence<LIndex...>, std::index_sequence<RIndex...>)
     {
-        return std::array<T, N + M>{ { Left[LIndex]..., Right[RIndex]... } };
+        return std::array<T, N + M>{{Left[LIndex]..., Right[RIndex]...}};
     }(Left, Right, std::make_index_sequence<N>(), std::make_index_sequence<M>());
 }
+
 #pragma endregion
 
 // Compile-time
@@ -70,26 +70,45 @@ namespace cmp
     #pragma endregion
 
     #pragma region Array
-    // Sometimes we just need a bit more room..
-    template <typename T, size_t Old, size_t New>
-    constexpr std::array<T, New> resize_array(const std::array<T, Old> &Input)
-    {
-        constexpr auto Min = std::min(Old, New);
 
-        return[]<size_t ...Index>(const std::array<T, Old> &Input, std::index_sequence<Index...>)
+    // Concatinate arrays.
+    template <typename T, size_t N, size_t M>
+    constexpr auto combineArray(const std::array<T, N> &Left, const std::array<T, M> &Right)
+    {
+        return []<size_t... LIndex, size_t... RIndex>(const std::array<T, N> &Left, const std::array<T, M> &Right, std::index_sequence<LIndex...>, std::index_sequence<RIndex...>)
         {
-            return std::array<T, New>{ { Input[Index]... }};
+            return std::array<T, N + M>{{Left[LIndex]..., Right[RIndex]...}};
+        }(Left, Right, std::make_index_sequence<N>(), std::make_index_sequence<M>());
+    }
+
+    // Split at index.
+    template <size_t SplitIndex, typename T, size_t N>
+    constexpr auto splitArray(const std::array<T, N> &Array)
+    {
+        return []<size_t... LIndex, size_t... RIndex>(const std::array<T, N> &Array, std::index_sequence<LIndex...>, std::index_sequence<RIndex...>)
+        {
+            return std::make_pair(std::array<T, sizeof...(LIndex)>{Array[LIndex]...}, std::array<T, sizeof...(RIndex)>{Array[sizeof...(LIndex) + RIndex]...});
+        }(Array, std::make_index_sequence<SplitIndex>{}, std::make_index_sequence<N - SplitIndex>{});
+    }
+
+    // Expand with default-initialized elements, or truncate and shrink.
+    template <size_t Newsize, typename T, size_t Oldsize>
+    constexpr std::array<T, Newsize> resizeArray(const std::array<T, Oldsize> &Input)
+    {
+        constexpr auto Min = std::min(Oldsize, Newsize);
+
+        return[]<size_t ...Index>(const std::array<T, Oldsize> &Input, std::index_sequence<Index...>)
+        {
+            return std::array<T, Newsize>{ { Input[Index]... }};
         }(Input, std::make_index_sequence<Min>());
     }
 
-    // All this just to convert a string literal to an array without the null byte.
-    template <typename T, size_t N> constexpr auto toArray(const T(&Input)[N])
+    // Helper for dealing with string-literals.
+    template <typename T, size_t N> constexpr auto stripNullchar(const T(&Input)[N])
     {
-        return[]<size_t ...Index>(const T(&Input)[N], std::index_sequence<Index...>)
-        {
-            return std::array<T, N - 1>{ { Input[Index]... }};
-        }(Input, std::make_index_sequence<N - 1>());
+        return resizeArray<N - 1>(std::to_array(Input));
     }
+
     #pragma endregion
 
     #pragma region Memory
@@ -434,6 +453,10 @@ namespace cmp
             return Array_t<uint8_t, N>{ { uint8_t(Input[Index])... }};
         }(Value, std::make_index_sequence<N>());
     }
+    template <typename T, size_t N> constexpr auto getBytes(const std::array<T, N> &Value)
+    {
+        return std::bit_cast<std::array<uint8_t, sizeof(T) * N>>(Value);
+    }
     template <size_t N = std::dynamic_extent> constexpr auto getBytes(std::span<const uint8_t, N> Input) { return Input; }
     template <Range_t T> requires(std::extent<T>() == 0 && std::is_constant_evaluated()) constexpr auto getBytes(const T &Range)
     {
@@ -462,6 +485,7 @@ namespace cmp
 
         return Buffer;
     }
+
 
 
     #pragma endregion

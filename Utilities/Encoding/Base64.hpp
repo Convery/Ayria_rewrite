@@ -171,7 +171,7 @@ namespace Base64
     }
     template <cmp::Char_t T, size_t N> constexpr bool isValid(const T(&Input)[N])
     {
-        return isValid(cmp::toArray(Input));
+        return isValid(cmp::stripNullchar(Input));
     }
 
     // Dynamically selects the proper storage type.
@@ -197,11 +197,11 @@ namespace Base64
     // String literal helper.
     template <cmp::Char_t T, size_t N> constexpr auto Encode(const T(&Input)[N])
     {
-        return Encode(cmp::toArray(Input));
+        return Encode(cmp::stripNullchar(Input));
     }
     template <cmp::Char_t T, size_t N> constexpr auto Decode(const T(&Input)[N])
     {
-        return Decode(cmp::toArray(Input));
+        return Decode(cmp::stripNullchar(Input));
     }
 
     // RFC7515, URL compatible charset.
