@@ -7,6 +7,7 @@
 */
 
 #include <Utilities/Utilities.hpp>
+#include <random>
 
 int main()
 {
@@ -79,25 +80,44 @@ int main()
             As there's little to no reason to ever consteval, we just do runtime checks.
         */
 
-        // Intentionally bad seeds for Private- and Shared-keys.
-        const auto [PK1, SK1] = qDSA::Createkeypair(123);
-        const auto [PK2, SK2] = qDSA::Createkeypair(321);
+        std::random_device Device;
+        std::mt19937_64 Engine(Device());
+        std::uniform_int_distribution<uint64_t> Distribution;
 
-        // Key-exchange.
-        const auto X1 = qDSA::Generatesecret(PK1, SK2);
-        const auto X2 = qDSA::Generatesecret(PK2, SK1);
-        if (X1 != X2) printf("BROKEN: qDSA keysharing\n");
+        for (size_t i = 0; i < 64; ++i)
+        {
+            // Intentionally bad seeds for Private- and Shared-keys.
+            const auto [PK1, SK1] = qDSA::Createkeypair(Distribution(Engine));
+            const auto [PK2, SK2] = qDSA::Createkeypair(Distribution(Engine));
 
-        // Signatures should be unique.
-        const auto Sig1 = qDSA::Sign(PK1, SK1, cmp::toArray("123"));
-        const auto Sig2 = qDSA::Sign(PK2, SK2, cmp::toArray("abc"));
-        if (Sig1 == Sig2) printf("BROKEN: qDSA signing\n");
+            // Key-exchange.
+            const auto X1 = qDSA::Generatesecret(PK1, SK2);
+            const auto X2 = qDSA::Generatesecret(PK2, SK1);
+            if (X1 != X2)
+            {
+                printf("BROKEN: qDSA keysharing\n");
+                return false;
+            }
 
-        // Verify that bad signatures fail properly.
-        const auto V1 = qDSA::Verify(PK1, Sig1, cmp::toArray("123"));
-        const auto V2 = qDSA::Verify(PK2, Sig2, cmp::toArray("abc"));
-        const auto V3 = qDSA::Verify(PK1, Sig2, cmp::toArray("abc"));
-        if (!V1 || !V2 || V3) printf("BROKEN: qDSA verification\n");
+            // Signatures should be unique.
+            const auto Sig1 = qDSA::Sign(PK1, SK1, cmp::stripNullchar("123"));
+            const auto Sig2 = qDSA::Sign(PK2, SK2, cmp::stripNullchar("abc"));
+            if (Sig1 == Sig2)
+            {
+                printf("BROKEN: qDSA signing\n");
+                return false;
+            }
+
+            // Verify that bad signatures fail properly.
+            const auto V1 = qDSA::Verify(PK1, Sig1, cmp::stripNullchar("123"));
+            const auto V2 = qDSA::Verify(PK2, Sig2, cmp::stripNullchar("abc"));
+            const auto V3 = qDSA::Verify(PK1, Sig2, cmp::stripNullchar("abc"));
+            if (!V1 || !V2 || V3)
+            {
+                printf("BROKEN: qDSA verification\n");
+                return false;
+            }
+        }
 
         return true;
     }();

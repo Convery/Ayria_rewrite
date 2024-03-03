@@ -1,1246 +1,1145 @@
 /*
     Initial author: Convery (tcn@ayria.se)
-    Started: 2022-06-30
+    Started: 2024-03-03
     License: MIT
 
-    quotient Digital Signature Algorithm
-    arXiv:1709.03358
+    quotient Digital Signature Algorithm - arXiv:1709.03358
+    Hardening - 10.46586/tches.v2018.i3.331-371
 
-    NOTE(tcn):
-    Due to the constexpr limitations on unions (__cpp_constexpr < 202002), a tuple-based implementation is needed.
-    As such, constexpr evaluation is very slow and limited by /constexpr:steps<NUMBER>
-
-    !! This has not been extensively tested / audited !!
+    qDSA is implemented over the Kummer-variety Genus 2 curve.
+    Using Gaudry-Schost rather than Schnorr signatures to counter Bleichenbacher attacks.
 */
 
 #pragma once
 #include <Utilities/Utilities.hpp>
 #include <Utilities/Crypto/SHA.hpp>
 
+// API definition.
 namespace qDSA
 {
-    // A "proper" crypto implementation should be constant time..
-    constexpr bool Constanttime = false;
-
     // Fixed size containers for primitive types.
-    using Generickey_t = std::array<uint8_t, 32>;
     using Privatekey_t = std::array<uint8_t, 32>;
-    using Publickey_t  = std::array<uint8_t, 32>;
-    using Sharedkey_t  = std::array<uint8_t, 32>;
-    using Signature_t  = std::array<uint8_t, 64>;
+    using Publickey_t = std::array<uint8_t, 32>;
+    using Sharedkey_t = std::array<uint8_t, 32>;
+    using Signature_t = std::array<uint8_t, 64>;
 
-    // Combine arrays, no idea why the STL doesn't provide this..
+    // Create a keypair from a random seed.
+    constexpr Publickey_t getPublickey(const Privatekey_t &Privatekey);
+    template <typename T> constexpr std::pair<Publickey_t, Privatekey_t> Createkeypair(const T &Seed);
+
+    // Compute a shared secret between two keypairs (A.PK, B.SK) == (B.PK, A.SK)
+    constexpr std::optional<Sharedkey_t> Generatesecret(const Publickey_t &Publickey, const Privatekey_t &Privatekey);
+
+    // Create a signature for the provided message, somewhat hardened against hackery.
+    template <cmp::Sequential_t C> constexpr Signature_t Sign(const Publickey_t &Publickey, const Privatekey_t &Privatekey, const C &Message);
+
+    // Verify that the message was signed by the owner of the public key.
+    template <cmp::Sequential_t C> constexpr bool Verify(const Publickey_t &Publickey, const Signature_t &Signature, const C &Message);
+
+    // Combine arrays, for cleaner code.
     template <typename T, size_t N, size_t M>
-    constexpr std::array<T, N + M> operator+(const std::array<T, N> &Left, const std::array<T, M> &Right)
+    constexpr auto operator+(const std::array<T, N> &Left, const std::array<T, M> &Right)
     {
-        return[]<size_t ...LIndex, size_t ...RIndex>(const std::array<T, N> &Left, const std::array<T, M> &Right, std::index_sequence<LIndex...>, std::index_sequence<RIndex...>)
+        return[]<size_t... LIndex, size_t... RIndex>(const std::array<T, N> &Left, const std::array<T, M> &Right, std::index_sequence<LIndex...>, std::index_sequence<RIndex...>)
         {
-            return std::array<T, N + M>{ { Left[LIndex]..., Right[RIndex]... } };
+            return std::array<T, N + M>{{Left[LIndex]..., Right[RIndex]...}};
         }(Left, Right, std::make_index_sequence<N>(), std::make_index_sequence<M>());
     }
 }
 
-namespace qDSA::Datatypes
+// We need some larger integers, but in a separate namespace so that there's no collision with native uint128_t.
+namespace qDSA::Detail
 {
-    // 128-bit Kummer point.
-    struct K128_t final
+    template <size_t Bits> struct Bigint_t : std::array<uint64_t, Bits / 64>
     {
-        static constexpr size_t Soragesize = 128 / 8;
-        union
-        {
-            __m128i V; // Compiler hint.
-            std::array<uint8_t, Soragesize> RAW{};
-        };
+        static_assert(Bits % 64 == 0, "Size must be a multiple of 64 bits");
+        using Base_t = std::array<uint64_t, Bits / 64>;
+        using Base_t::value_type;
+        using Base_t::operator=;
+        using Base_t::array;
 
-        // Nothing special..
-        constexpr K128_t() = default;
-        constexpr K128_t(K128_t &&) = default;
-        constexpr K128_t(const K128_t &) = default;
-        constexpr K128_t &operator=(K128_t &&) = default;
-        constexpr K128_t &operator=(const K128_t &) = default;
-
-        // Generic initialization for the array.
-        constexpr K128_t(uint64_t High, uint64_t Low)
+        constexpr Bigint_t() = default;
+        constexpr Bigint_t(Bigint_t<Bits> &&) = default;
+        constexpr Bigint_t(const Bigint_t<Bits> &) = default;
+        constexpr Bigint_t(uint64_t Low) : Base_t({ Low }) {}
+        constexpr Bigint_t(const Base_t &Array) : Base_t(Array) {}
+        constexpr Bigint_t(Base_t &&Array) : Base_t(std::move(Array)) {}
+        constexpr Bigint_t(const std::array<uint64_t, 1> &Single) : Base_t({ Single[0] }) {}
+        constexpr Bigint_t(std::initializer_list<uint64_t> List) : Base_t()
         {
-            RAW = std::bit_cast<std::array<uint8_t, 8>>(High) + std::bit_cast<std::array<uint8_t, 8>>(Low);
-        }
-        template <size_t N> constexpr K128_t(const std::span<uint8_t, N> Other)
-        {
-            std::ranges::copy_n(Other.begin(), std::min(Soragesize, Other.size()), RAW.data());
-        }
-        template <size_t N> constexpr K128_t(const std::array<uint8_t, N> &Other)
-        {
-            std::ranges::copy_n(Other.begin(), std::min(Soragesize, Other.size()), RAW.data());
+            std::copy(List.begin(), List.end(), this->begin());
         }
 
-        // Simplify access to the raw storage.
-        constexpr uint8_t &operator[](size_t i) { return RAW[i]; }
-        constexpr uint8_t operator[](size_t i) const { return RAW[i]; }
+        // Implicitly deleted..
+        Bigint_t &operator=(Bigint_t &&) = default;
+        Bigint_t &operator=(const Bigint_t &) = default;
 
-        // Convert to components.
-        constexpr std::tuple<uint64_t, uint64_t> asPair() const
+        //
+        static constexpr size_t size() noexcept
         {
-            const auto Pair = std::bit_cast<std::array<uint64_t, 2>>(RAW);
-            return { Pair[0], Pair[1] };
-        }
-        constexpr std::array<uint8_t, Soragesize> asArray() const
-        {
-            return RAW;
-        }
-        template <typename T> requires std::constructible_from<T, decltype(RAW)> constexpr operator T() const
-        {
-            return T(RAW);
+            return Bits / 64;
         }
 
-        // Extracted due to needing expansion and reduction.
-        // friend constexpr K128_t operator *=(K128_t &Left, const K128_t &Right);
-        // friend constexpr K128_t operator *(const K128_t &Left, const K128_t &Right);
+        // Helper for Bigint_t <-> Bigint_t construction.
+        constexpr Bigint_t(const Bigint_t<128> &Low, const Bigint_t<128> &High) requires(Bits == 256) : Bigint_t(Low + High) {}
+        constexpr Bigint_t(const Bigint_t<256> &Low, const Bigint_t<256> &High) requires(Bits == 512) : Bigint_t(Low + High) {}
 
-        // While the rest can be inlined.
-        friend constexpr K128_t operator +(const K128_t &Left, const K128_t &Right)
+        // Endian-safe access incase of bit_casts.
+        constexpr auto &operator[](size_t Index)
         {
-            K128_t Result{};
+            if (std::endian::native == std::endian::little)
+                return std::array<uint64_t, Bits / 64>::operator[](Index);
+            else
+                return std::array<uint64_t, Bits / 64>::operator[](this->size() - 1 - Index);
+        }
+        constexpr auto &operator[](size_t Index) const
+        {
+            if (std::endian::native == std::endian::little)
+                return std::array<uint64_t, Bits / 64>::operator[](Index);
+            else
+                return std::array<uint64_t, Bits / 64>::operator[](this->size() - 1 - Index);
+        }
 
-            uint8_t Carry = 0;
-            for (size_t i = 0; i < 16; ++i)
-            {
-                const uint16_t Temp = uint16_t(Left[i]) + uint16_t(Right[i]) + Carry;
-                Carry = (Temp >> 8) & 1;
-                Result[i] = uint8_t(Temp);
-            }
+        // Helpers for access as elements.
+        constexpr auto asPair() const requires(Bits == 128)
+        {
+            return std::tuple<uint64_t, uint64_t>{ this->operator[](0), this->operator[](1) };
+        }
+        constexpr auto asPair() const requires(Bits == 256)
+        {
+            return std::tuple<Bigint_t<128>, Bigint_t<128>>{
+                {this->operator[](0), this->operator[](1)}, { this->operator[](2), this->operator[](3) }
+            };
+        }
+        constexpr auto asPair() const requires(Bits == 512)
+        {
+            return std::tuple<Bigint_t<256>, Bigint_t<256>>{
+                { this->operator[](0), this->operator[](1), this->operator[](2), this->operator[](3) },
+                { this->operator[](4), this->operator[](5), this->operator[](6), this->operator[](7) }
+            };
+        }
+        constexpr std::array<uint8_t, Bits / 8> asBytes() const
+        {
+            return std::bit_cast<std::array<uint8_t, Bits / 8>>(*this);
+        }
 
-            Carry *= 2;
-            for (size_t i = 0; i < 16; ++i)
-            {
-                const uint16_t Temp = uint16_t(Result[i]) + Carry;
-                Carry = (Temp >> 8) & 1;
-                Result[i] = uint8_t(Temp);
-            }
+        friend constexpr bool operator==(const Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right)
+        {
+            bool Result = true;
+
+            for (uint8_t i = 0; i < Left.size(); ++i)
+                Result &= (Left[i] == Right[i]);
 
             return Result;
         }
-        friend constexpr K128_t operator -(const K128_t &Left, const K128_t &Right)
+
+        friend constexpr Bigint_t<Bits> operator~(const Bigint_t<Bits> &Value)
         {
-            K128_t Result{};
+            Bigint_t<Bits> Result{};
 
-            uint8_t Carry = 0;
-            for (size_t i = 0; i < 16; ++i)
-            {
-                const uint16_t Temp = uint16_t(Left[i]) - (uint16_t(Right[i]) + Carry);
-                Carry = (Temp >> 8) & 1;
-                Result[i] = uint8_t(Temp);
-            }
-
-            Carry *= 2;
-            for (size_t i = 0; i < 16; ++i)
-            {
-                const uint16_t Temp = uint16_t(Result[i]) - Carry;
-                Carry = (Temp >> 8) & 1;
-                Result[i] = uint8_t(Temp);
-            }
+            for (uint8_t i = 0; i < Value.size(); ++i)
+                Result[i] = ~Value[i];
 
             return Result;
         }
-        constexpr K128_t &operator +=(const K128_t &Right) { *this = (*this + Right); return *this; }
-        constexpr K128_t &operator -=(const K128_t &Right) { *this = (*this - Right); return *this; }
-
-        // Freeze the point..
-        constexpr K128_t &Freeze()
+        friend constexpr Bigint_t<Bits> operator<<(const Bigint_t<Bits> &Value, size_t Shift)
         {
-            K128_t Result{};
-
-            // Extract the top bit.
-            uint16_t Carry = uint8_t(RAW[15] >> 7);
-            Result[15] = RAW[15] & uint8_t(0x7F);
-
-            for (size_t i = 0; i < 15; ++i)
+            Bigint_t<Bits> Result{};
+            if (Shift >= 64)
             {
-                const uint16_t Temp = uint16_t(RAW[i]) + Carry;
-                Carry = (Temp >> 8) & 1;
-                Result[i] = uint8_t(Temp);
-            }
-
-            Result[15] = uint8_t(uint8_t(Result[15]) + Carry);
-            Result[0] = uint8_t(uint8_t(Result[0]) + uint8_t(Result[15] >> 7));
-            Result[15] &= uint8_t(0x7F);
-
-            RAW = Result;
-            return *this;
-        }
-        static constexpr K128_t Freeze(const K128_t &Input)
-        {
-            auto Copy = Input;
-            return Copy.Freeze();
-        }
-    };
-
-    // 256 bit compressed Kummer surface.
-    struct K256_t final
-    {
-        static constexpr size_t Soragesize = 256 / 8;
-        union
-        {
-            __m256i V; // Compiler hint.
-            std::array<uint8_t, Soragesize> RAW{};
-        };
-
-        // Nothing special..
-        constexpr K256_t() = default;
-        constexpr K256_t(K256_t &&) = default;
-        constexpr K256_t(const K256_t &) = default;
-        constexpr K256_t &operator=(K256_t &&) = default;
-        constexpr K256_t &operator=(const K256_t &) = default;
-
-        // Generic initialization for the array.
-        constexpr K256_t(K128_t High, K128_t Low)
-        {
-            RAW = std::bit_cast<std::array<uint8_t, 16>>(High.RAW) + std::bit_cast<std::array<uint8_t, 16>>(Low.RAW);
-        }
-        constexpr K256_t(uint64_t A, uint64_t B, uint64_t C, uint64_t D)
-        {
-            RAW = std::bit_cast<std::array<uint8_t, 8>>(A) + std::bit_cast<std::array<uint8_t, 8>>(B) + std::bit_cast<std::array<uint8_t, 8>>(C) + std::bit_cast<std::array<uint8_t, 8>>(D);
-        }
-        template <size_t N> constexpr K256_t(const std::span<uint8_t, N> Other)
-        {
-            std::ranges::copy_n(Other.begin(), std::min(Soragesize, Other.size()), RAW.data());
-        }
-        template <size_t N> constexpr K256_t(const std::array<uint8_t, N> &Other)
-        {
-            std::ranges::copy_n(Other.begin(), std::min(Soragesize, Other.size()), RAW.data());
-        }
-
-        // Simplify access to the raw storage.
-        constexpr uint8_t &operator[](size_t i) { return RAW[i]; }
-        constexpr uint8_t operator[](size_t i) const { return RAW[i]; }
-
-        // Convert to components.
-        constexpr std::tuple<K128_t, K128_t> asPair() const
-        {
-            const auto Pair = std::bit_cast<std::array<std::array<uint8_t, 16>, 2>>(RAW);
-            return { Pair[0], Pair[1] };
-        }
-        constexpr std::tuple<uint64_t, uint64_t, uint64_t, uint64_t> asTuple() const
-        {
-            const auto Tuple = std::bit_cast<std::array<uint64_t, 4>>(RAW);
-            return { Tuple[0], Tuple[1], Tuple[2], Tuple[3] };
-        }
-        constexpr std::array<uint8_t, Soragesize> asArray() const
-        {
-            return RAW;
-        }
-        template <typename T> requires std::constructible_from<T, decltype(RAW)> constexpr operator T() const
-        {
-            return T(RAW);
-        }
-    };
-
-    // 512 bit uncompressed Kummer surface.
-    struct K512_t final
-    {
-        static constexpr size_t Soragesize = 512 / 8;
-        union
-        {
-            __m512i V; // Compiler hint.
-            std::array<uint8_t, Soragesize> RAW{};
-        };
-
-        // Nothing special..
-        constexpr K512_t() = default;
-        constexpr K512_t(K512_t &&) = default;
-        constexpr K512_t(const K512_t &) = default;
-        constexpr K512_t &operator=(K512_t &&) = default;
-        constexpr K512_t &operator=(const K512_t &) = default;
-
-        // Generic initialization for the array.
-        constexpr K512_t(K256_t High, K256_t Low)
-        {
-            RAW = std::bit_cast<std::array<uint8_t, 32>>(High.RAW) + std::bit_cast<std::array<uint8_t, 32>>(Low.RAW);
-        }
-        constexpr K512_t(K128_t X, K128_t Y, K128_t Z, K128_t W = {})
-        {
-            const auto High = std::bit_cast<std::array<uint8_t, 16>>(X.RAW) + std::bit_cast<std::array<uint8_t, 16>>(Y.RAW);
-            const auto Low = std::bit_cast<std::array<uint8_t, 16>>(Z.RAW) + std::bit_cast<std::array<uint8_t, 16>>(W.RAW);
-            RAW = High + Low;
-        }
-        template <size_t N> constexpr K512_t(const std::span<uint8_t, N> Other)
-        {
-            std::ranges::copy_n(Other.begin(), std::min(Soragesize, Other.size()), RAW.data());
-        }
-        template <size_t N> constexpr K512_t(const std::array<uint8_t, N> &Other)
-        {
-            std::ranges::copy_n(Other.begin(), std::min(Soragesize, Other.size()), RAW.data());
-        }
-
-        // Simplify access to the raw storage.
-        constexpr uint8_t &operator[](size_t i) { return RAW[i]; }
-        constexpr const uint8_t &operator[](size_t i) const { return RAW[i]; }
-
-        // Convert to components.
-        constexpr std::tuple<K256_t, K256_t> asPair() const
-        {
-            const auto Pair = std::bit_cast<std::array<std::array<uint8_t, 32>, 2>>(RAW);
-            return { Pair[0], Pair[1] };
-        }
-        constexpr std::array<uint8_t, Soragesize> asArray() const
-        {
-            return RAW;
-        }
-        constexpr std::tuple<K128_t, K128_t, K128_t, K128_t> asTuple() const
-        {
-            const auto Tuple = std::bit_cast<std::array<std::array<uint8_t, 16>, 4>>(RAW);
-            return { Tuple[0], Tuple[1], Tuple[2], Tuple[3] };
-        }
-        template <typename T> requires std::constructible_from<T, decltype(RAW)> constexpr operator T() const
-        {
-            return T(RAW);
-        }
-    };
-}
-
-namespace qDSA::Pointmath
-{
-    using namespace Datatypes;
-
-    // Partial addition with an offset for sets.
-    constexpr K512_t Addpartial(const K512_t &Left, const K256_t &Right, uint8_t Offset)
-    {
-        uint8_t Carry = 0;
-        K512_t Result{ Left };
-
-        for (size_t i = 0; i < 32; ++i)
-        {
-            const uint16_t Temp = uint16_t(Left[i + Offset]) + uint16_t(Right[i]) + Carry;
-            Carry = (Temp >> 8) & 1;
-            Result[i + Offset] = uint8_t(Temp);
-        }
-
-        for (size_t i = 32 + Offset; i < 64; ++i)
-        {
-            const uint16_t Temp = uint16_t(Left[i]) + Carry;
-            Carry = (Temp >> 8) & 1;
-            Result[i] = uint8_t(Temp);
-        }
-
-        return Result;
-    }
-
-    // Helpers for N-bit <-> N-bit conversion.
-    constexpr K256_t Expand(const K128_t &X, const K128_t &Y)
-    {
-        std::array<uint16_t, 32> Buffer{};
-        std::array<uint8_t, 32> Result{};
-
-        for (size_t i = 0; i < 16; ++i)
-        {
-            for (size_t c = 0; c < 16; ++c)
-            {
-                const uint16_t Temp = uint16_t(X[i]) * uint16_t(Y[c]);
-                Buffer[i + c + 1] += (Temp >> 8) & 0xFF;
-                Buffer[i + c] += Temp & 0xFF;
-            }
-        }
-
-        for (size_t i = 0; i < 31; ++i)
-        {
-            Buffer[i + 1] += Buffer[i] >> 8;
-            Result[i] = uint8_t(Buffer[i]);
-        }
-
-        Result[31] = uint8_t(Buffer[31]);
-        return { Result };
-    }
-    constexpr K512_t Expand(const K256_t &X, const K256_t &Y)
-    {
-        const auto [X0, X1] = X.asPair();
-        const auto [Y0, Y1] = Y.asPair();
-
-        K512_t Result{ Expand(X0, Y0), {} };
-        Result = Addpartial(Result, Expand(X0, Y1), 16);
-        Result = Addpartial(Result, Expand(X1, Y0), 16);
-        Result = Addpartial(Result, Expand(X1, Y1), 32);
-
-        return Result;
-    }
-    constexpr K128_t Reduce(const K256_t &Input)
-    {
-        std::array<uint8_t, 16> Result{};
-        std::array<uint16_t, 16> Buffer{};
-
-        for (size_t i = 0; i < 16; ++i)
-        {
-            Buffer[i] = uint16_t(Input[i]);
-            Buffer[i] += 2 * uint8_t(Input[i + 16]);
-        }
-
-        // NOTE(tcn): After 4 million iterations, it looks good enough..
-        // TODO(tcn): Verify if we need to do two iterations.
-        for (size_t i = 0; i < 15; ++i)
-        {
-            Buffer[i + 1] += (Buffer[i] >> 8);
-            Buffer[i] &= 0x00FF;
-        }
-
-        Buffer[0] += 2 * (Buffer[15] >> 8);
-        Buffer[15] &= 0x00FF;
-
-        for (size_t i = 0; i < 15; ++i)
-        {
-            Buffer[i + 1] += (Buffer[i] >> 8);
-            Result[i] = uint8_t(Buffer[i]);
-        }
-
-        Result[15] = uint8_t(Buffer[15]);
-        return { Result };
-    }
-    constexpr K256_t Reduce(const K512_t &Input)
-    {
-        constexpr K256_t L1 = std::to_array<uint8_t>(
-        {
-               0xbd, 0x05, 0x0c, 0x84, 0x4b, 0x0b, 0x73, 0x47,
-               0xff, 0x54, 0xa1, 0xf9, 0xc9, 0x7f, 0xc2, 0xd2,
-               0x94, 0x52, 0xc7, 0x20, 0x98, 0xd6, 0x34, 0x03
-        });
-        constexpr K256_t L6 = std::to_array<uint8_t>(
-        {
-                0x40, 0x6f, 0x01, 0x03, 0xe1, 0xd2, 0xc2, 0xdc,
-                0xd1, 0x3f, 0x55, 0x68, 0x7e, 0xf2, 0x9f, 0xb0,
-                0x34, 0xa5, 0xd4, 0x31, 0x08, 0xa6, 0x35, 0xcd
-        });
-
-        K512_t Buffer = Input;
-        for (size_t i = 0; i < 4; ++i)
-        {
-            const auto [High, Low] = Buffer.asPair();
-
-            const auto Temp = Expand(Low, L6);
-            cmp::memcpy(&Buffer[32], &Temp[32], 32);
-
-            Buffer = Addpartial(Buffer, Temp.RAW, 0);
-        }
-
-        Buffer[33] = (Buffer[32] & uint8_t(0x1c)) >> 2;
-        Buffer[32] = Buffer[32] << 6;
-        Buffer[32] |= (Buffer[31] & uint8_t(0xfc)) >> 2;
-        Buffer[31] &= uint8_t(0x03);
-
-        for (size_t i = 0; i < 1; ++i)
-        {
-            const auto [High, Low] = Buffer.asPair();
-
-            const auto Temp = Expand(Low, L1);
-            cmp::memcpy(&Buffer[32], &Temp[32], 32);
-            Buffer = Addpartial(Buffer, Temp.RAW, 0);
-        }
-
-        Buffer[33] = uint8_t(0);
-        Buffer[32] = (Buffer[31] & uint8_t(0x04)) >> 2;
-        Buffer[31] &= uint8_t(0x03);
-
-        for (size_t i = 0; i < 1; ++i)
-        {
-            const auto [High, Low] = Buffer.asPair();
-
-            Buffer[32] = uint8_t(0);
-
-            Buffer = Addpartial(Buffer, Expand(Low, L1).RAW, 0);
-        }
-
-        return Buffer.RAW;
-    }
-
-    // Extracted due to needing expansion and reduction.
-    constexpr K128_t operator *(const K128_t &Left, const K128_t &Right)
-    {
-        return Reduce(Expand(Left, Right));
-    }
-    constexpr K128_t operator *=(K128_t &Left, const K128_t &Right) { Left = (Left * Right); return Left; }
-
-    // For somewhat cleaner code later.
-    constexpr bool isZero(const K128_t &Input)
-    {
-        if constexpr (Constanttime)
-        {
-            const auto One = K128_t{ std::array<uint8_t, 16> {1} };
-            const auto Frozen = K128_t{ One + Input }.Freeze();
-
-            uint8_t Check = Frozen[0] ^ 1;
-            for (size_t i = 1; i < 16; ++i)
-            {
-                Check |= Frozen[i];
-            }
-
-            return Check != 0;
-        }
-        else
-        {
-            return Input.RAW == K128_t{}.RAW;
-        }
-    }
-    constexpr void Swap(K128_t &A, K128_t &B, bool doSwap)
-    {
-        if constexpr (Constanttime)
-        {
-            const uint8_t Mask = 0 - static_cast<int>(doSwap);
-
-            for (size_t i = 0; i < 16; ++i)
-            {
-                uint8_t Temp = A[i] ^ B[i];
-                Temp &= Mask;
-                A[i] ^= Temp;
-                B[i] ^= Temp;
-            }
-        }
-        else
-        {
-            if (doSwap) std::swap(A, B);
-        }
-    }
-    constexpr void Swap(K512_t &Left, K512_t &Right, bool doSwap)
-    {
-        auto [lX, lY, lZ, lW] = Left.asTuple();
-        auto [rX, rY, rZ, rW] = Right.asTuple();
-
-        Swap(lX, rX, doSwap);
-        Swap(lY, rY, doSwap);
-        Swap(lZ, rZ, doSwap);
-        Swap(lW, rW, doSwap);
-
-        Left = { lX, lY, lZ, lW };
-        Right = { rX, rY, rZ, rW };
-    }
-
-    // Surfaces need some extra maths.
-    constexpr K128_t Negate(const K128_t &Input)
-    {
-        return K128_t{} - Input;
-    }
-    constexpr K256_t Negate(const K256_t &Input)
-    {
-        constexpr K256_t N = std::to_array<uint8_t>
-        ({
-                0x43, 0xFA, 0xF3, 0x7B, 0xB4, 0xF4, 0x8C, 0xB8,
-                0x00, 0xAB, 0x5E, 0x6,  0x36, 0x80, 0x3D, 0x2D,
-                0x6B, 0xAD, 0x38, 0xDF, 0x67, 0x29, 0xCB, 0xFC,
-                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x03
-        });
-
-        uint16_t Carry{};
-        K256_t Result{};
-
-        for (uint8_t i = 0; i < 32; ++i)
-        {
-            const auto Temp = uint16_t(N[i]) - (uint16_t(Input[i]) + Carry);
-            Carry = (Temp >> 8) & 1;
-            Result[i] = uint8_t(Temp);
-        }
-
-        return Result;
-    }
-
-    // Partial negation.
-    constexpr K512_t &NegateX(K512_t &Input)
-    {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        Input = { Negate(X), Y, Z, W };
-        return Input;
-    }
-    constexpr K512_t &NegateW(K512_t &Input)
-    {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        Input = { X, Y, Z, Negate(W) };
-        return Input;
-    }
-    constexpr K512_t &NegateX(K512_t &&Input)
-    {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        Input = { Negate(X), Y, Z, W };
-        return Input;
-    }
-    constexpr K512_t &NegateW(K512_t &&Input)
-    {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        Input = { X, Y, Z, Negate(W) };
-        return Input;
-    }
-
-    // Internal helper for exponentials, should not be used anywhere else.
-    namespace Internal
-    {
-        template <size_t Exponent> K128_t Exp(const K128_t &Input)
-        {
-            // NOTE(tcn): MSVC wants to instantiate all paths, even those never taken..
-            if constexpr (Exponent == 0) return Input;
-
-            if constexpr (Exponent == 1) return Input;
-            if constexpr (Exponent == 2) return Input * Input;
-
-            if constexpr (Exponent % 2 == 0)
-            {
-                const auto Squared = Input * Input;
-                return Exp<Exponent / 2>(Squared);
+                for (size_t i = Value.size() - 1; i >= Shift / 64; --i)
+                {
+                    Result[i] = Value[i - Shift / 64];
+                }
             }
             else
             {
-                const auto Squared = Input * Input;
-                return Input * Exp<(Exponent - 1) / 2>(Squared);
+                for (size_t i = Value.size() - 1; i > 0; --i)
+                {
+                    Result[i] = (Value[i] << Shift) | (Value[i - 1] >> (64 - Shift));
+                }
+                Result[0] = Value[0] << Shift;
             }
-        };
-    }
-
-    // ret = Input ^ {-1/2}
-    constexpr K128_t InvSQRT(const K128_t &Input)
-    {
-        /*
-            NOTE(tcn):
-            This is effectively Input ^ 127605887595351923798765477786913079294
-            As such, there's a lot of room for optimization here.
-
-            Provided are 3 implementations, need to benchmark on different systems.
-            More work is needed by someone with more maths knowledge.
-
-            Bench on MSVC 17.4.3, CPU E5-2660v2 (2013), 100K iterations, 10 runs:
-            LambdaA:  72.05us (min),  79.18us (max)
-            LambdaB:  68.86us (min),  75.69us (max)
-            LambdaC: 117.79us (min), 135.96us (max)
-        */
-
-        [[maybe_unused]] const auto LambdaA = [](K128_t Input)
+            return Result;
+        }
+        friend constexpr Bigint_t<Bits> operator>>(const Bigint_t<Bits> &Value, size_t Shift)
         {
-            using namespace Internal;
-
-            const auto A = Exp<2>(Input);
-            const auto B = Exp<15>(Input);
-            const auto C = Exp<31>(Input);
-
-            const auto D = Exp<33>(C);
-            const auto E = Exp<0x401>(D);
-            const auto F = Exp<0x100001>(E);
-            const auto G = Exp<0x10000000001>(F);
-            const auto H = F * Exp<0x10000000000>(G);
-
-            const auto I = Exp<16>(H);
-            const auto J = Exp<2>(I * B);
-
-            return J * Exp<2>(J * A);
-        };
-        [[maybe_unused]] const auto LambdaB = [](K128_t Input)
-        {
-            const auto Square = [](K128_t Input, size_t Count)
+            Bigint_t<Bits> Result{};
+            if (Shift >= 64)
             {
-                for (size_t i = 0; i < Count; ++i)
-                    Input *= Input;
-                return Input;
-            };
-
-            const auto A = Input * Input;
-            const auto B = A * Input;
-            const auto C = B * B;
-            const auto D = C * C;
-            const auto E = D * B;
-            const auto F = E * E;
-            const auto G = F * Input;
-
-            const auto H = G * Square(G * G, 4);
-            const auto I = H * Square(H * H, 9);
-            const auto J = I * Square(I * I, 19);
-
-            const auto K = J * Square(J * J, 39);
-            const auto L = J * Square(K, 40);
-            const auto M = Square(L, 4);
-            const auto N = M * E;
-            const auto O = N * N;
-
-            const auto P = (O * A) * (O * A);
-
-            return O * P;
-        };
-        [[maybe_unused]] const auto LambdaC = [](K128_t Input)
-        {
-            Input *= Input;
-            auto Result = Input;
-
-            // 01011111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111110
-            for (size_t i = 2; i < 127; ++i)
-            {
-                Input *= Input;
-                if (i != 125) Result *= Input;
+                for (size_t i = 0; i < Value.size() - Shift / 64; ++i)
+                {
+                    Result[i] = Value[i + Shift / 64];
+                }
             }
+            else
+            {
+                for (size_t i = 0; i < Value.size() - 1; ++i)
+                {
+                    Result[i] = (Value[i] >> Shift) | (Value[i + 1] << (64 - Shift));
+                }
+                Result[Value.size() - 1] = Value[Value.size() - 1] >> Shift;
+            }
+            return Result;
+        }
+
+        friend constexpr Bigint_t<Bits> operator|(const Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right)
+        {
+            Bigint_t<Bits> Result{};
+
+            for (uint8_t i = 0; i < Left.size(); ++i)
+                Result[i] = Left[i] | Right[i];
 
             return Result;
+        }
+        friend constexpr Bigint_t<Bits> operator&(const Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right)
+        {
+            Bigint_t<Bits> Result{};
+
+            for (uint8_t i = 0; i < Left.size(); ++i)
+                Result[i] = Left[i] & Right[i];
+
+            return Result;
+        }
+        friend constexpr Bigint_t<Bits> operator^(const Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right)
+        {
+            Bigint_t<Bits> Result{};
+
+            for (uint8_t i = 0; i < Left.size(); ++i)
+                Result[i] = Left[i] ^ Right[i];
+
+            return Result;
+        }
+
+        friend constexpr Bigint_t<Bits> operator|(const Bigint_t<Bits> &Left, const uint64_t &Right)
+        {
+            Bigint_t<Bits> Result = Left;
+            Result[0] |= Right;
+            return Result;
+        }
+        friend constexpr Bigint_t<Bits> operator&(const Bigint_t<Bits> &Left, const uint64_t &Right)
+        {
+            Bigint_t<Bits> Result = Left;
+            Result[0] &= Right;
+            return Result;
+        }
+        friend constexpr Bigint_t<Bits> operator^(const Bigint_t<Bits> &Left, const uint64_t &Right)
+        {
+            Bigint_t<Bits> Result = Left;
+            Result[0] ^= Right;
+            return Result;
+        }
+
+        // Compound operators, should be optimized out.
+        friend constexpr Bigint_t<Bits> &operator<<=(Bigint_t<Bits> &Value, size_t Shift) { Value = Value << Shift; return Value; }
+        friend constexpr Bigint_t<Bits> &operator>>=(Bigint_t<Bits> &Value, size_t Shift) { Value = Value >> Shift; return Value; }
+        friend constexpr Bigint_t<Bits> &operator|=(Bigint_t<Bits> &Left, const uint64_t &Right) { Left = Left | Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator&=(Bigint_t<Bits> &Left, const uint64_t &Right) { Left = Left & Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator^=(Bigint_t<Bits> &Left, const uint64_t &Right) { Left = Left ^ Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator|=(Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right) { Left = Left | Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator&=(Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right) { Left = Left & Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator^=(Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right) { Left = Left ^ Right; return Left; }
+    };
+
+    using uint128_t = Bigint_t<128>;
+    using uint256_t = Bigint_t<256>;
+    using uint512_t = Bigint_t<512>;
+}
+
+// Sepearated big-integer arithmetic in-case we want to use a native uint128_t in the future.
+namespace qDSA::Bigint
+{
+    using namespace Detail;
+
+    // Need some constant-time comparators.
+    constexpr bool LT(const uint64_t &X, const uint64_t &Y)
+    {
+        return (X ^ ((X ^ Y) | ((X - Y) ^ Y))) >> 63;
+    }
+    constexpr bool isZero(const uint64_t &Value)
+    {
+        return 1 ^ ((Value | (0 - Value)) >> 63);
+    }
+
+    // Could be replaced with intrinsics / assembly later. TODO(tcn): Benchmark.
+    constexpr std::pair<uint64_t, bool> ADDC(const uint64_t &X, const uint64_t &Y, bool Carry = false)
+    {
+        const auto Temp = X + Carry;
+        const auto Sum = Temp + Y;
+        const auto Overflow = LT(Temp, Carry) | LT(Sum, Temp);
+
+        return { Sum, Overflow };
+    }
+    constexpr std::pair<uint64_t, bool> SUBC(const uint64_t &X, const uint64_t &Y, bool Borrow = false)
+    {
+        const auto Temp = X - Y;
+        const auto Underflow = LT(X, Y) | (Borrow & isZero(Temp));
+        const auto Diff = Temp - Borrow;
+
+        return { Diff, Underflow };
+    }
+
+    // Heavy enough that we should extract and optimize.
+    constexpr uint128_t Product(const uint64_t &X, const uint64_t &Y)
+    {
+        // Constexpr fallback.
+        auto Product_fallback = [](const uint64_t &X, const uint64_t &Y) -> Bigint_t<128>
+        {
+            const uint64_t Lowmask = 0xFFFFFFFFULL;
+            const uint32_t XLow = X & Lowmask, XHigh = X >> 32;
+            const uint32_t YLow = Y & Lowmask, YHigh = Y >> 32;
+
+            const auto B00 = uint64_t(XLow) * YLow;
+            const auto B01 = uint64_t(XLow) * YHigh;
+            const auto B10 = uint64_t(XHigh) * YLow;
+            const auto B11 = uint64_t(XHigh) * YHigh;
+
+            const auto M1 = B10 + (B00 >> 32);
+            const auto M2 = B01 + (M1 & Lowmask);
+
+            // Maybe need an ADDC?
+            const uint64_t High = B11 + (M1 >> 32) + (M2 >> 32);
+            const uint64_t Low = ((M2 & Lowmask) << 32) | (B00 & Lowmask);
+
+            return { Low, High };
         };
 
-        return LambdaB(Input);
+        if (std::is_constant_evaluated())
+            return Product_fallback(X, Y);
+
+        // x64
+        #if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+        uint64_t Low{}, High{};
+        asm(
+            "mulq %3\n\t"
+            : "=a"(Low), "=d"(High)
+            : "%0"(X), "rm"(Y));
+        return { Low, High };
+
+        // AArch64
+        #elif (defined(__GNUC__) || defined(__clang__)) && defined(__aarch64__)
+        uint64_t Low{}, High{};
+        asm(
+            "mul %0, %2, %3\n\t"
+            "umulh %1, %2, %3\n\t"
+            : "=&r"(Low), "=r"(High)
+            : "r"(X), "r"(Y));
+        return { Low, High };
+
+        // x64
+        #elif defined(_MSC_VER) && defined(_M_X64)
+        uint64_t Low{}, High{};
+        Low = _umul128(X, Y, &High);
+        return { Low, High };
+
+        // AArch64
+        #elif defined(_MSC_VER) && defined(_M_ARM64)
+        return { (X * Y), __umulh(X, Y) };
+
+        // 32-bit architectures.
+        #else
+        return Product_fallback(X, Y);
+        #endif
     }
-    constexpr K128_t Invert(const K128_t &Input)
+
+    // Optimized for common case of small inputs.
+    template <size_t Bits> constexpr std::pair<Bigint_t<Bits>, bool> ADDC(const Bigint_t<Bits> &Left, const uint64_t &Right, uint8_t Offset = 0)
     {
-        auto Result = InvSQRT(Input * Input);
-        const auto Temp = Result * Input;
-        Result *= Temp;
+        Bigint_t<Bits> Result{ Left };
+        bool Carry = false;
+
+        std::tie(Result[Offset], Carry) = ADDC(Result[Offset], Right, Carry);
+
+        for (size_t i = Offset + 1; i < Bigint_t<Bits>::size(); ++i)
+        {
+            std::tie(Result[i], Carry) = ADDC(Result[i], 0ULL, Carry);
+        }
+
+        return { Result, Carry };
+    }
+    template <size_t Bits> constexpr std::pair<Bigint_t<Bits>, bool> SUBC(const Bigint_t<Bits> &Left, const uint64_t &Right, uint8_t Offset = 0)
+    {
+        Bigint_t<Bits> Result{ Left };
+        bool Borrow = false;
+
+        std::tie(Result[Offset], Borrow) = SUBC(Result[Offset], Right, Borrow);
+
+        for (size_t i = Offset + 1; i < Bigint_t<Bits>::size(); ++i)
+        {
+            std::tie(Result[i], Borrow) = SUBC(Result[i], 0ULL, Borrow);
+        }
+
+        return { Result, Borrow };
+    }
+    template <size_t Bits> constexpr Bigint_t<Bits * 2> MUL(const Bigint_t<Bits> &Left, const uint64_t &Right)
+    {
+        Bigint_t<Bits * 2> Result{};
+        uint64_t Temp = 0;
+
+        for (size_t i = 0; i < Bigint_t<Bits>::size(); ++i)
+        {
+            const auto [Low, High] = Product(Left[i], Right).asPair();
+            const auto [Lowsum, Lowcarry] = ADDC(Low, Temp);
+            const auto [Highsum, Highcarry] = ADDC(Result[i], Lowsum);
+
+            Temp = High + Lowcarry + Highcarry;
+            Result[i] = Highsum;
+        }
+
+        Result[Bigint_t<Bits>::size()] = Temp;
+
         return Result;
     }
 
-    // Returns a default constructed point on error.
-    constexpr K128_t hasSQRT(const K128_t &Delta, bool Sigma)
+    // Generics for large integers, no need for an input flag.
+    template <size_t LBits, size_t RBits> constexpr std::pair<Bigint_t<LBits>, bool> ADDC(const Bigint_t<LBits> &Left, const Bigint_t<RBits> &Right, uint8_t Offset = 0)
     {
-        K128_t Result = InvSQRT(Delta);
-        Result *= Delta;
+        static_assert(LBits >= RBits, "Left operand must be larger or equal in size to the right operand.");
 
-        // Invalid.
-        if (!isZero((Result * Result) - Delta)) return {};
+        Bigint_t<LBits> Result{ Left };
+        bool Carry = false;
 
-        Result.Freeze();
-
-        if (((Result[0] & 1) ^ Sigma))
+        for (size_t i = 0; i < Bigint_t<RBits>::size(); ++i)
         {
-            Result = Negate(Result);
+            std::tie(Result[Offset + i], Carry) = ADDC(Result[Offset + i], Right[i], Carry);
+        }
+
+        for (size_t i = Offset + Bigint_t<RBits>::size(); i < Bigint_t<LBits>::size(); ++i)
+        {
+            std::tie(Result[i], Carry) = ADDC(Result[i], 0ULL, Carry);
+        }
+
+        return { Result, Carry };
+    }
+    template <size_t LBits, size_t RBits> constexpr std::pair<Bigint_t<LBits>, bool> SUBC(const Bigint_t<LBits> &Left, const Bigint_t<RBits> &Right, uint8_t Offset = 0)
+    {
+        static_assert(LBits >= RBits, "Left operand must be larger or equal in size to the right operand.");
+
+        Bigint_t<LBits> Result{ Left };
+        bool Borrow = false;
+
+        for (size_t i = 0; i < Bigint_t<RBits>::size(); ++i)
+        {
+            std::tie(Result[Offset + i], Borrow) = SUBC(Result[Offset + i], Right[i], Borrow);
+        }
+
+        for (size_t i = Offset + Bigint_t<RBits>::size(); i < Bigint_t<LBits>::size(); ++i)
+        {
+            std::tie(Result[i], Borrow) = SUBC(Result[i], 0ULL, Borrow);
+        }
+
+        return { Result, Borrow };
+    }
+    template <size_t Bits> constexpr Bigint_t<Bits * 2> MUL(const Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right)
+    {
+        Bigint_t<Bits * 2> Result{};
+
+        for (size_t i = 0; i < Bigint_t<Bits>::size(); ++i)
+        {
+            uint64_t Temp = 0;
+
+            for (size_t j = 0; j < Bigint_t<Bits>::size(); ++j)
+            {
+                const auto [Low, High] = Product(Left[i], Right[j]).asPair();
+                const auto [Lowsum, Lowcarry] = ADDC(Low, Temp);
+                const auto [Highsum, Highcarry] = ADDC(Result[i + j], Lowsum);
+
+                Temp = High + Lowcarry + Highcarry;
+                Result[i + j] = Highsum;
+            }
+
+            Result[i + Bigint_t<Bits>::size()] = Temp;
         }
 
         return Result;
     }
 
-    // Surface math.
-    constexpr K512_t Square4(const K512_t &Input)
+    // Some arithmetic on Mersenne primes can be simplified by bitflips.
+    template <size_t Bits> constexpr bool getMSB(const Bigint_t<Bits> &Value) { return (Value[Bigint_t<Bits>::size() - 1] >> 63) & 1; }
+    template <size_t Bits> constexpr bool getLSB(const Bigint_t<Bits> &Value) { return Value[0] & 1; }
+    template <size_t Bits> constexpr Bigint_t<Bits> setMSB(const Bigint_t<Bits> &Value, bool MSB)
     {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        return { X * X, Y * Y, Z * Z, W * W };
+        auto Copy = Value;
+        Copy[Bigint_t<Bits>::size() - 1] &= 0x7fffffffffffffffULL;
+        Copy[Bigint_t<Bits>::size() - 1] |= uint64_t(MSB) << 63;
+
+        return Copy;
     }
-    constexpr K512_t Hadamard(const K512_t &Input)
+}
+
+// Modular arithmetic over the Mersenne prime (2^127 - 1).
+namespace qDSA::Fieldelements
+{
+    using namespace Detail;
+
+    /*
+        NOTE(tcn):
+        This code is designed for the compiler to reason about.
+        Eliding copies etc. rather than modifying references.
+        This is because of constexpr limitations in MSVC.
+    */
+
+    // FE1271_t represents a 128-bit unsigned integer, operations are done in cryptographically constant time.
+    struct FE1271_t : uint128_t
     {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        const auto A = Y - X;
-        const auto B = Z + W;
-        const auto C = X + Y;
-        const auto D = Z - W;
+        using uint128_t::asBytes;
+
+        // Standard initialization.
+        constexpr FE1271_t() : uint128_t() {}
+        constexpr FE1271_t(FE1271_t &&) = default;
+        constexpr FE1271_t(const FE1271_t &) = default;
+        constexpr FE1271_t(uint64_t Low) : uint128_t(Low) {}
+        constexpr FE1271_t(uint128_t Value) : uint128_t(Value) {}
+        constexpr FE1271_t(uint64_t Low, uint64_t High) : uint128_t({ Low, High }) {}
+
+        // Implicitly deleted..
+        constexpr FE1271_t &operator=(FE1271_t &&) = default;
+        constexpr FE1271_t &operator=(const FE1271_t &) = default;
+
+        // Partial-reduction mod P (2^127 - 1)
+        constexpr FE1271_t Reduce_add() const
+        {
+            // ADDC(*this, _bittestandreset64((*this)[1], 63));
+            const uint64_t MSB = Bigint::getMSB(*this);
+            const auto Clear = Bigint::setMSB(*this, 0);
+            return Bigint::ADDC(Clear, MSB).first;
+        }
+        constexpr FE1271_t Reduce_sub() const
+        {
+            // SUBC(*this, _bittestandreset64((*this)[1], 63));
+            const uint64_t MSB = Bigint::getMSB(*this);
+            const auto Clear = Bigint::setMSB(*this, 0);
+            return Bigint::SUBC(Clear, MSB).first;
+        }
+        constexpr FE1271_t Reduce_full() const
+        {
+            return Negate().Negate();
+        }
+
+        // X^(-1) == X^(P-2) % P
+        constexpr FE1271_t Invert() const
+        {
+            const auto Square = [](FE1271_t Value, uint8_t N)
+            {
+                for (uint8_t i = 0; i < N; ++i)
+                    Value *= Value;
+
+                return Value;
+            };
+
+            const auto X = *this;
+
+            // 69 MUL
+            const auto A = X * Square(X, 1);
+            const auto B = A * Square(A, 2);
+            const auto C = B * Square(B, 4);
+            const auto D = C * Square(C, 8);
+            const auto E = D * Square(D, 16);
+            const auto F = E * Square(E, 32);
+
+            // 66 MUL
+            const auto G = E * Square(F, 32);
+            const auto H = D * Square(G, 16);
+            const auto I = C * Square(H, 8);
+            const auto J = B * Square(I, 4);
+            const auto K = X * Square(J, 3);
+
+            // 3 MUL
+            return K * Square(X, 2);
+        }
+
+        // X^((P+1)/4) == X^(2^125)
+        constexpr FE1271_t SQRT() const
+        {
+            const auto X = *this;
+            auto Acc = X * X;
+
+            for (uint8_t i = 1; i < 125; ++i)
+                Acc *= Acc;
+
+            return Acc;
+        }
+
+        // Combined SQRT checking.
+        constexpr std::pair<FE1271_t, bool> trySQRT() const
+        {
+            const auto X = *this;
+            const auto Root = X.SQRT().Reduce_add();
+            const auto Valid = (Root * Root) == X;
+
+            return { Root, Valid };
+        }
+
+        // Need to check against both zero and the prime.
+        constexpr bool isZero() const
+        {
+            const FE1271_t Prime = { uint64_t(-1), uint64_t(-1) >> 1 };
+            const FE1271_t Zero{};
+
+            const bool isPrime = ((*this)[0] == Prime[0]) & ((*this)[1] == Prime[1]);
+            const bool isZero = ((*this)[0] == Zero[0]) & ((*this)[1] == Zero[1]);
+
+            return isPrime | isZero;
+        }
+
+        // Flip the sign.
+        constexpr FE1271_t Negate() const
+        {
+            return FE1271_t{} - *this;
+        }
+
+        // Assumes partially-reduced input.
+        friend constexpr FE1271_t operator+(const FE1271_t &Left, const FE1271_t &Right)
+        {
+            return FE1271_t{ Bigint::ADDC(Left, Right).first }.Reduce_add();
+        }
+        friend constexpr FE1271_t operator-(const FE1271_t &Left, const FE1271_t &Right)
+        {
+            return FE1271_t{ Bigint::SUBC(Left, Right).first }.Reduce_sub();
+        }
+        friend constexpr FE1271_t operator*(const FE1271_t &Left, const FE1271_t &Right)
+        {
+            const auto [Low, High] = cmp::splitArray<2>(Bigint::MUL(Left, Right));
+            const uint128_t Overflow = (uint128_t(High) << 1) | Bigint::getMSB(uint128_t(Low));
+
+            return FE1271_t{ Bigint::setMSB(uint128_t(Low), 0) } + FE1271_t{ Overflow };
+        }
+
+        friend constexpr FE1271_t operator+(const FE1271_t &Left, const uint64_t &Right)
+        {
+            return FE1271_t{ Bigint::ADDC(Left, Right).first }.Reduce_add();
+        }
+        friend constexpr FE1271_t operator-(const FE1271_t &Left, const uint64_t &Right)
+        {
+            return FE1271_t{ Bigint::SUBC(Left, Right).first }.Reduce_sub();
+        }
+        friend constexpr FE1271_t operator*(const FE1271_t &Left, const uint64_t &Right)
+        {
+            const auto [Low, High] = cmp::splitArray<2>(Bigint::MUL(Left, Right));
+            const uint128_t Overflow = (uint128_t(High) << 1) | Bigint::getMSB(uint128_t(Low));
+
+            return FE1271_t{ Bigint::setMSB(uint128_t(Low), 0) } + FE1271_t{ Overflow };
+        }
+
+        // Compound operators, should be optimized out.
+        friend constexpr FE1271_t &operator<<=(FE1271_t &Value, uint8_t Shift) { Value = Value << Shift; return Value; }
+        friend constexpr FE1271_t &operator>>=(FE1271_t &Value, uint8_t Shift) { Value = Value >> Shift; return Value; }
+        friend constexpr FE1271_t &operator+=(FE1271_t &Left, const FE1271_t &Right) { Left = Left + Right; return Left; }
+        friend constexpr FE1271_t &operator-=(FE1271_t &Left, const FE1271_t &Right) { Left = Left - Right; return Left; }
+        friend constexpr FE1271_t &operator*=(FE1271_t &Left, const FE1271_t &Right) { Left = Left * Right; return Left; }
+        friend constexpr FE1271_t &operator+=(FE1271_t &Left, const uint64_t &Right) { Left = Left + Right; return Left; }
+        friend constexpr FE1271_t &operator-=(FE1271_t &Left, const uint64_t &Right) { Left = Left - Right; return Left; }
+        friend constexpr FE1271_t &operator*=(FE1271_t &Left, const uint64_t &Right) { Left = Left * Right; return Left; }
+        friend constexpr FE1271_t &operator|=(FE1271_t &Left, const uint64_t &Right) { Left = Left | Right; return Left; }
+        friend constexpr FE1271_t &operator&=(FE1271_t &Left, const uint64_t &Right) { Left = Left & Right; return Left; }
+    };
+
+    using Compressedpoint_t = std::array<FE1271_t, 2>;
+    using Kummerpoint_t = std::array<FE1271_t, 4>;
+}
+
+// Scalars are reduced to 250-bit rather than 256-bit as the top will always be 0.
+namespace qDSA::Scalar
+{
+    using namespace Bigint;
+
+    // Scalar reduction around N, 250-bit result.
+    constexpr uint256_t Reduce(const uint512_t &Value)
+    {
+        constexpr uint256_t L0 = { 0x47730B4B840C05BDULL, 0xD2C27FC9F9A154FFULL, 0x0334D69820C75294ULL };
+        constexpr uint256_t L6 = { 0xDCC2D2E103016F40ULL, 0xB09FF27E68553FD1ULL, 0xCD35A60831D4A534ULL };
+
+        uint512_t Buffer{ Value };
+
+        for (uint8_t i = 0; i < 4; ++i)
+        {
+            const auto [Blo, Bhi] = cmp::splitArray<4>(Buffer);
+            const auto [Plo, Phi] = cmp::splitArray<4>(MUL(uint256_t(Bhi), L6));
+
+            Buffer = ADDC(uint512_t(Blo + Phi), uint256_t(Plo)).first;
+        }
+
+        // Adjust.
+        Buffer[4] = (Buffer[4] << 6) | ((Buffer[3] & 0xFC00000000000000ULL) >> 58);
+        Buffer[3] &= 0x03FFFFFFFFFFFFFFULL;
+
+        for (uint8_t i = 0; i < 1; ++i)
+        {
+            const auto [Blo, Bhi] = cmp::splitArray<4>(Buffer);
+            const auto [Plo, Phi] = cmp::splitArray<4>(MUL(uint256_t(Bhi), L0));
+
+            Buffer = ADDC(uint512_t(Blo + Phi), uint256_t(Plo)).first;
+        }
+
+        // Adjust.
+        Buffer[4] = (Buffer[3] & 0x0400000000000000ULL) >> 58;
+        Buffer[3] &= 0x03FFFFFFFFFFFFFFULL;
+
+        for (uint8_t i = 0; i < 1; ++i)
+        {
+            const auto [Blo, Bhi] = cmp::splitArray<4>(Buffer);
+            const auto [Plo, Phi] = cmp::splitArray<4>(MUL(uint256_t(Bhi), L0));
+
+            Buffer = ADDC(uint512_t(Blo + uint256_t()), uint256_t(Plo)).first;
+        }
+
+        return uint256_t{ Buffer[0], Buffer[1], Buffer[2], Buffer[3] };
+    }
+
+    // Swap the sign by rotating around N.
+    constexpr uint256_t Negate(const uint256_t &Value)
+    {
+        constexpr uint256_t N = { 0xB88CF4B47BF3FA43ULL, 0x2D3D8036065EAB00ULL, 0xFCCB2967DF38AD6BULL, 0x03FFFFFFFFFFFFFFULL };
+        return SUBC(N, Value).first;
+    }
+
+    // s = (r - hd') % N.
+    constexpr uint256_t Scalarops(const uint256_t &R, const uint256_t &H, const uint256_t &D)
+    {
+        const auto Temp = MUL(H, D);
+        const auto Red = Reduce(Temp);
+        const auto Neg = Negate(Red);
+
+        const uint512_t A = Neg + uint256_t{};
+        const auto Large = ADDC(A, R).first;
+
+        return Reduce(Large);
+    }
+
+    // Put input in scalar range.
+    template <size_t N> constexpr uint256_t getScalar(const std::array<uint8_t, N> &Input) requires (N <= 64)
+    {
+        std::array<uint8_t, 64> Value{};
+        std::ranges::copy(Input, Value.data());
+
+        return Reduce(std::bit_cast<uint512_t>(Value));
+    }
+}
+
+// We are using unsigned arithmetic, so the sign of the operations need to be flipped when used.
+namespace qDSA::Constants
+{
+    using namespace Fieldelements;
+
+    constexpr std::array<uint16_t, 4> Epsilon_hat = { /*(-)*/ 833, 2499, 1617, 561 };
+    constexpr std::array<uint16_t, 4> Epsilon = { 114, /*(-)*/ 57, /*(-)*/ 66, /*(-)*/ 418 };
+    constexpr std::array<uint16_t, 4> Kappa = { /*(-)*/ 4697, 5951, 5753, /*(-)*/ 1991 };
+    constexpr std::array<uint16_t, 4> Kappa_hat = { /*(-)*/ 961, 128, 569, 1097 };
+    constexpr std::array<uint16_t, 4> Mu = { /*(-)*/ 11, 22, 19, 3 };
+    constexpr std::array<uint16_t, 4> Mu_hat = { /*(-)*/ 33, 11, 17, 49 };
+
+    constexpr std::array<uint16_t, 8> CurveQ = { 3575, 9625, 4625, 12259, 11275, 7475, 6009, 43991 };
+    constexpr FE1271_t CurveC = { 0x46F7E3D8CDDDA843ULL, 0x40F50EEFA320A2DDULL };
+}
+
+// The actual implementation of qDSA.
+namespace qDSA::Algorithm
+{
+    using namespace Constants;
+
+    // Constant-time swapping.
+    constexpr void CSWAP(FE1271_t &A, FE1271_t &B, bool doSwap)
+    {
+        const auto Mask = 0ULL - doSwap;
+        const auto Low = (A[0] ^ B[0]) & Mask;
+        const auto High = (A[1] ^ B[1]) & Mask;
+
+        A[0] ^= Low; B[0] ^= Low;
+        A[1] ^= High; B[1] ^= High;
+    }
+    constexpr void CSWAP(Kummerpoint_t &A, Kummerpoint_t &B, bool doSwap)
+    {
+        CSWAP(A[0], B[0], doSwap);
+        CSWAP(A[1], B[1], doSwap);
+        CSWAP(A[2], B[2], doSwap);
+        CSWAP(A[3], B[3], doSwap);
+    }
+
+    // 4-way operations on the elements.
+    constexpr Kummerpoint_t MUL4(const Kummerpoint_t &Left, const Kummerpoint_t &Right)
+    {
+        return { (Left[0] * Right[0]), (Left[1] * Right[1]), (Left[2] * Right[2]), (Left[3] * Right[3]) };
+    }
+    constexpr Kummerpoint_t SQR4(const Kummerpoint_t &Value)
+    {
+        return MUL4(Value, Value);
+    }
+
+    // Hadamard transform for projections.
+    constexpr Kummerpoint_t Hadamard(const Kummerpoint_t &Value)
+    {
+        const auto A = Value[1] - Value[0];
+        const auto B = Value[2] + Value[3];
+        const auto C = Value[0] + Value[1];
+        const auto D = Value[2] - Value[3];
 
         return { A + B, A - B, D - C, C + D };
-    }
-    constexpr K512_t Multiply4(const K512_t &Left, const K512_t &Right)
-    {
-        const auto [lX, lY, lZ, lW] = Left.asTuple();
-        const auto [rX, rY, rZ, rW] = Right.asTuple();
-        return { lX * rX, lY * rY, lZ * rZ, lW * rW };
-    }
-    constexpr K128_t Dotproduct(const K512_t &Left, const K512_t &Right)
-    {
-        const auto [lX, lY, lZ, lW] = Left.asTuple();
-        const auto [rX, rY, rZ, rW] = Right.asTuple();
-        return (lX * rX) + (lY * rY) + (lZ * rZ) + (lW * rW);
-    }
-    constexpr K128_t negDotproduct(const K512_t &Left, const K512_t &Right)
-    {
-        const auto [lX, lY, lZ, lW] = Left.asTuple();
-        const auto [rX, rY, rZ, rW] = Right.asTuple();
-        return (lX * rX) - (lY * rY) - (lZ * rZ) + (lW * rW);
-    }
 
-    // Scalar groups.
-    constexpr K256_t getPositive(const K256_t &Input)
-    {
-        if ((Input[0] & 1)) return Negate(Input);
-        else return Input;
-    }
-    constexpr K256_t opsScalar(const K256_t &A, const K256_t &B, const K256_t &C)
-    {
-        const K512_t Temp(Negate(Reduce(Expand(B, C))), {});
-        return Reduce(Addpartial(Temp, A, 0));
-    }
-    template <size_t N> constexpr K256_t getScalar(const std::array<uint8_t, N> &Input)
-    {
-        return Reduce(K512_t{ Input });
-    }
-}
-
-namespace qDSA::Fieldmath
-{
-    using namespace Datatypes;
-    using namespace Pointmath;
-
-    // Evaluate the polynomials at (L1, L2, Tau).
-    constexpr std::pair<K128_t, K128_t> getK2(const K128_t &L1, const K128_t &L2, bool Tau)
-    {
-        K128_t A, B;
-
-        A = L1 * L2 * std::to_array<uint8_t>({ 0x11, 0x12 });
-
-        if (Tau)
-        {
-            B = L1 * std::to_array<uint8_t>({ 0xF7, 0x0D });
-            A += B;
-
-            B = L2 * std::to_array<uint8_t>({ 0x99, 0x25 });
-            A -= B;
-        }
-
-        A *= std::to_array<uint8_t>({ 0xE3, 0x2F });
-        A += A;
-
-        B = L1 * std::to_array<uint8_t>({ 0x33, 0x1D });
-        B *= B;
-        A = B - A;
-
-        B = L2 * std::to_array<uint8_t>({ 0xE3, 0x2F });
-        B *= B;
-        A += B;;
-
-        if (Tau)
-        {
-            B = std::to_array<uint8_t>({ 0x0B, 0x2C });
-            B *= B;
-            A += B;
-        }
-
-        return { A, B };
-    }
-    constexpr std::tuple<K128_t, K128_t, K128_t> getK3(const K128_t &L1, const K128_t &L2, bool Tau)
-    {
-        K128_t A, B, C;
-
-        A = L1 * L1;
-        B = L2 * L2;
-
-        if (Tau)
-        {
-            C = std::to_array<uint8_t>({ 0x01, 0x00 });
-            A += C;
-            B += C;
-            C = A + B;
-        }
-
-        A *= L2 * std::to_array<uint8_t>({ 0xF7, 0x0D });
-        B *= L1 * std::to_array<uint8_t>({ 0x99, 0x25 });
-        A -= B;
-
-        if (Tau)
-        {
-            B = std::to_array<uint8_t>({ 0x01, 0x00 });
-            C -= B;
-            C -= B;
-            C *= std::to_array<uint8_t>({ 0x11, 0x12 });
-            A += C;
-        }
-
-        A *= std::to_array<uint8_t>({ 0xE3, 0x2F });
-
-        if (Tau)
-        {
-            B = L1 * L2 * (std::to_array<uint8_t>({ 0x79, 0x17 }) * std::to_array<uint8_t>({ 0xD7, 0xAB }));
-            A -= B;
-        }
-
-        return { A, B, C };
-    }
-    constexpr std::pair<K128_t, K128_t> getK4(const K128_t &L1, const K128_t &L2, bool Tau)
-    {
-        K128_t A, B;
-
-        if (Tau)
-        {
-            A = L1 * std::to_array<uint8_t>({ 0x99, 0x25 });
-            B = L2 * std::to_array<uint8_t>({ 0xF7, 0x0D });
-            B -= A;
-
-            B += std::to_array<uint8_t>({ 0x11, 0x12 });
-            B *= L1 * L2 * std::to_array<uint8_t>({ 0xE3, 0x2F });
-            B += B;
-
-            A = L1 * std::to_array<uint8_t>({ 0xE3, 0x2F });
-            A *= A;
-            B = A - B;
-
-            A = L2 * std::to_array<uint8_t>({ 0x33, 0x1D });
-            A *= A;
-            B += A;
-        }
-
-        A = L1 * L2 * std::to_array<uint8_t>({ 0x0B, 0x2C });
-        A *= A;
-
-        if (Tau) A += B;
-
-        return { A, B };
-    }
-
-    // (Bjj * R1^2) - (2 * C * Bij * R1 * R2) + (Bii * R2^2) == 0
-    constexpr bool isQuad(const K128_t &Bij, const K128_t &Bjj, const K128_t &Bii, const K128_t &R1, const K128_t &R2)
-    {
-        constexpr K128_t One = std::to_array<uint8_t>({ 1 });
-        constexpr K128_t Const = std::to_array<uint8_t>
-        ({
-            0x43, 0xA8, 0xDD, 0xCD, 0xD8, 0xE3, 0xF7, 0x46,
-            0xDD, 0xA2, 0x20, 0xA3, 0xEF, 0x0E, 0xF5, 0x40
-        });
-
-        const auto A = (Bjj * R1 * R1);
-        const auto B = (Const * Bij * R1 * R2) + (Const * Bij * R1 * R2);
-        const auto C = (Bii * R2 * R2);
-
-        const auto Result = K128_t::Freeze(One + (A - B + C));
-        return Result.RAW == One.RAW;
-    }
-}
-
-namespace qDSA::Matrixmath
-{
-    using namespace Datatypes;
-    using namespace Pointmath;
-    using namespace Fieldmath;
-
-    // Mult by k-hat and mu-hat.
-    constexpr K128_t kRow(const K128_t &X1, const K128_t &X2, const K128_t &X3, const K128_t &X4)
-    {
         return
-            (X2 * std::to_array<uint8_t>({ 0x80, 0x00 })) +
-            (X3 * std::to_array<uint8_t>({ 0x39, 0x02 })) +
-            (X4 * std::to_array<uint8_t>({ 0x49, 0x04 })) -
-            (X1 * std::to_array<uint8_t>({ 0xC1, 0x03 }));
-    }
-    constexpr K128_t mRow(const K128_t &X1, const K128_t &X2, const K128_t &X3, const K128_t &X4)
-    {
-        return
-            ((X2 + X2) - X1) *
-            (std::to_array<uint8_t>({ 0x0B, 0x00 })) +
-            (X3 * std::to_array<uint8_t>({ 0x13, 0x00 })) +
-            (X4 * std::to_array<uint8_t>({ 0x03, 0x00 }));
-    }
-
-    // Ret = ( B_{1,1}, B_{2,2}, B_{3,3}, B_{4,4} )
-    constexpr K512_t biiValues(const K512_t &P, const K512_t &Q)
-    {
-        constexpr K512_t muHat{ std::to_array<uint8_t>({ 0x21, 0x00 }), std::to_array<uint8_t>({ 0x0B, 0x00 }), std::to_array<uint8_t>({ 0x11, 0x00 }), std::to_array<uint8_t>({ 0x31, 0x00 }) };
-        constexpr K512_t eHat{ std::to_array<uint8_t>({ 0x41, 0x03 }), std::to_array<uint8_t>({ 0xC3, 0x09 }), std::to_array<uint8_t>({ 0x51, 0x06 }), std::to_array<uint8_t>({ 0x31, 0x02 }) };
-        constexpr K512_t k{ std::to_array<uint8_t>({ 0x59, 0x12 }), std::to_array<uint8_t>({ 0x3F, 0x17 }), std::to_array<uint8_t>({ 0x79, 0x16 }), std::to_array<uint8_t>({ 0xC7, 0x07 }) };
-
-        const auto T1 = [&]() -> K512_t
         {
-            const auto [lX, lY, lZ, lW] = NegateX(Multiply4(Square4(P), eHat)).asTuple();
-            const auto [rX, rY, rZ, rW] = NegateX(Multiply4(Square4(Q), eHat)).asTuple();
+            Value[0] + Value[1] + Value[2] + Value[3],
+            Value[0] + Value[1] - Value[2] - Value[3],
+            Value[0] - Value[1] + Value[2] - Value[3],
+            Value[0] - Value[1] - Value[2] + Value[3]
+        };
+    }
+    constexpr Kummerpoint_t negHadamard(const Kummerpoint_t &Value)
+    {
+        const auto Tmp = Hadamard({ Value[0].Negate(), Value[1], Value[2], Value[3] });
+        return { Tmp[0], Tmp[1], Tmp[2], Tmp[3].Negate() };
+    }
 
-            return {
-                Dotproduct({ lX, lY, lZ, lW }, { rX, rY, rZ, rW }),
-                Dotproduct({ lX, lY, lZ, lW }, { rY, rX, rW, rZ }),
-                Dotproduct({ lX, lZ, lY, lW }, { rZ, rX, rW, rY }),
-                Dotproduct({ lX, lW, lY, lZ }, { rW, rX, rZ, rY })
-            };
-        }();
-        const auto T2 = [&]() -> K512_t
+    // Dot-product and a complement to handle negative inputs.
+    constexpr FE1271_t Dot(const Kummerpoint_t &Left, const Kummerpoint_t &Right)
+    {
+        return { (Left[0] * Right[0]) + (Left[1] * Right[1]) + (Left[2] * Right[2]) + (Left[3] * Right[3]) };
+    }
+    constexpr FE1271_t negDot(const Kummerpoint_t &Left, const Kummerpoint_t &Right)
+    {
+        return { (Left[0] * Right[0]) - (Left[1] * Right[1]) - (Left[2] * Right[2]) + (Left[3] * Right[3]) };
+    }
+
+    // Evaluate the polynomials.
+    constexpr FE1271_t evalK2(const FE1271_t &L1, const FE1271_t &L2, bool Tau)
+    {
+        // K2(L1, L2, Tau) = (Q5 * L1)^2 + (Q3 * L2)^2 + (Q4 * Tau)^2 - 2 * Q3 * (Q2 * L1 * L2 + Tau * (Q0 * L1 - Q1 * L2))
+
+        const auto A = (CurveQ[5] * L1) * (CurveQ[5] * L1);     // (Q5 * L1)^2
+        const auto B = (CurveQ[3] * L2) * (CurveQ[3] * L2);     // (Q3 * L2)^2
+        const auto C = uint64_t(CurveQ[4]) * CurveQ[4] * Tau;   // (Q4 * Tau)^2
+        const auto D = (CurveQ[0] * L1) - (CurveQ[1] * L2);     // Q0 * L1 - Q1 * L2
+        const auto E = CurveQ[2] * L1 * L2;                     // Q2 * L1 * L2
+        const auto F = CurveQ[3] * (E + Tau * D);               // Q3 * (Q2 * L1 * L2 + Tau * D)
+
+        return A + B + C - (F + F);
+
+    }
+    constexpr FE1271_t evalK3(const FE1271_t &L1, const FE1271_t &L2, bool Tau)
+    {
+        // K3(L1, L2, Tau) = Q3(Q0 * (L1^2 + Tau) * L2 - Q1 * L1  * (L2^2 + Tau) + Q2 * (L1^2 + L2^2) * Tau) - Q6 * Q7 * L1 * L2 * Tau
+
+        const auto A = uint64_t(CurveQ[6]) * CurveQ[7] * L1 * L2 * Tau; // Q6 * Q7 * L1 * L2 * Tau
+        const auto B = CurveQ[2] * (L1 * L1 + L2 * L2) * Tau;           // Q2 * (L1^2 + L2^2) * Tau
+        const auto C = CurveQ[1] * L1 * (L2 * L2 + Tau);                // Q1 * L1  * (L2^2 + Tau)
+        const auto D = CurveQ[0] * L2 * (L1 * L1 + Tau);                // Q0 * (L1^2 + Tau) * L2
+
+        return uint64_t(CurveQ[3]) * (D - C + B) - A;
+    }
+    constexpr FE1271_t evalK4(const FE1271_t &L1, const FE1271_t &L2, bool Tau)
+    {
+        // K4(L1, L2, Tau) = ((Q3 * L1)^2 + (Q5 * L2)^2 - 2 * Q3 * L1 * L2 * (Q0 * L2 - Q1 * L1 + Q2)) * Tau + (Q4 * L1 * L2)^2
+
+        const auto A = (CurveQ[3] * L1) * (CurveQ[3] * L1);             // (Q3 * L1)^2
+        const auto B = (CurveQ[5] * L2) * (CurveQ[5] * L2);             // (Q5 * L2)^2
+        const auto C = (CurveQ[4] * L1 * L2) * (CurveQ[4] * L1 * L2);   // (Q4 * L1 * L2)^2
+        const auto D = (CurveQ[3] * L1 * L2) + (CurveQ[3] * L1 * L2);   // 2 * Q3 * L1 * L2
+        const auto E = (CurveQ[0] * L2) - (CurveQ[1] * L1) + CurveQ[2]; // Q0 * L2 - Q1 * L1 + Q2
+
+        return (A + B - D * E) * Tau + C;
+    }
+
+    // Precompute inverted Kummer-point coordinates.
+    constexpr Kummerpoint_t Wrap(const Kummerpoint_t &Value)
+    {
+        const auto A = Value[1] * Value[2];
+        const auto B = Value[0] * (A * Value[3]).Invert();
+        const auto C = B * Value[3];
+
+        return { FE1271_t{}, C * Value[2], C * Value[1], A * B };
+    }
+    constexpr Kummerpoint_t Unwrap(const Kummerpoint_t &Value)
+    {
+        const auto A = Value[2] * Value[3];
+        const auto B = Value[1] * Value[3];
+        const auto C = Value[1] * Value[2];
+
+        return { C * Value[3], A, B, C };
+    }
+
+    // Combined pseudo-addition and doubling on K^2.
+    constexpr std::tuple<Kummerpoint_t, Kummerpoint_t> DBLADD(const Kummerpoint_t &P, const Kummerpoint_t &Q, const Kummerpoint_t &Diff)
+    {
+        auto Xq = Hadamard(Q);
+        auto Xp = Hadamard(P);
+
+        Xq = MUL4(Xq, Xp);
+        Xp = SQR4(Xp);
+
+        Xp = MUL4(Xp, { Epsilon_hat[0], Epsilon_hat[1], Epsilon_hat[2], Epsilon_hat[3] });
+        Xq = MUL4(Xq, { Epsilon_hat[0], Epsilon_hat[1], Epsilon_hat[2], Epsilon_hat[3] });
+
+        Xp = SQR4(Hadamard(Xp));
+        Xq = SQR4(Hadamard(Xq));
+
+        Xp = MUL4(Xp, { Epsilon[0], Epsilon[1], Epsilon[2], Epsilon[3] });
+        Xq = MUL4(Xq, { 1, Diff[1], Diff[2], Diff[3] });
+
+        return { Xp, Xq };
+    }
+
+    // Montgomery ladder over the X coordinate.
+    constexpr Kummerpoint_t Ladder(Kummerpoint_t Q, const Kummerpoint_t &Wrapped, const std::array<uint8_t, 32> &Scalar)
+    {
+        auto P = Kummerpoint_t{ Mu[0], Mu[1], Mu[2], Mu[3] };
+        uint8_t Previous = false;
+
+        // While the algorithm calls for 256 bits, we can save 6 iterations.
+        for (int i = 250; i >= 0; --i)
         {
-            const auto [X, Y, Z, W] = T1.asTuple();
-
-            return {
-                negDotproduct({ X, Y, Z, W }, k),
-                negDotproduct({ Y, X, W, Z }, k),
-                negDotproduct({ Z, W, X, Y }, k),
-                negDotproduct({ W, Z, Y, X }, k)
-            };
-
-        }();
-
-        return NegateX(Multiply4(T2, muHat));
-    }
-
-    // Ret = B_{ij}
-    constexpr K128_t bijValues(const K512_t &P, const K512_t &Q, const K512_t &C)
-    {
-        const auto [P1, P2, P3, P4] = P.asTuple();
-        const auto [Q1, Q2, Q3, Q4] = Q.asTuple();
-        const auto [C1, C2, C3, C4] = C.asTuple();
-        K128_t TempX, TempY, TempZ;
-        K128_t Result;
-
-        Result = P1 * P2;
-        TempX = Q1 * Q2;
-        TempY = P3 * P4;
-
-        Result = Result - TempY;
-        TempZ = Q3 * Q4;
-        TempX = TempX - TempZ;
-        Result = Result * TempX;
-        TempX = TempY * TempZ;
-
-        Result = Result * C3;
-        Result = Result * C4;
-
-        TempY = (C3 * C4) + (C1 * C2);
-        TempX = TempX * TempY;
-        Result = TempX - Result;
-
-        Result = Result * C1;
-        Result = Result * C2;
-
-        TempY = (C2 * C4) + (C1 * C3);
-        Result = Result * TempY;
-
-        TempY = (C2 * C3) + (C1 * C4);
-        Result = Result * TempY;
-
-        return Result;
-    }
-}
-
-namespace qDSA::Internal
-{
-    using namespace Datatypes;
-    using namespace Pointmath;
-    using namespace Fieldmath;
-    using namespace Matrixmath;
-
-    // Pre-computing inverted Kummer point coordinates.
-    constexpr K512_t Wrap(const K512_t &Input)
-    {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        const auto A = Invert((Y * Z) * W) * X;
-        const auto B = A * W;
-
-        return { {}, { B * Z }, { B * Y }, { (Y * Z) * A} };
-    }
-    constexpr K512_t Unwrap(const K512_t &Input)
-    {
-        const auto [X, Y, Z, W] = Input.asTuple();
-        return { (Y * Z) * W, Z * W, Y * W, (Y * Z) };
-    }
-
-    // Scalar pseudo-multiplication using a Montgomery ladder.
-    constexpr std::pair<K512_t, K512_t> xDBLADD(K512_t Xp, K512_t Xq, const K512_t &Xd)
-    {
-        constexpr K512_t eHat{ std::to_array<uint8_t>({ 0x41, 0x03 }), std::to_array<uint8_t>({ 0xC3, 0x09 }), std::to_array<uint8_t>({ 0x51, 0x06 }), std::to_array<uint8_t>({ 0x31, 0x02 }) };
-        constexpr K512_t e{ std::to_array<uint8_t>({ 0x72, 0x00 }), std::to_array<uint8_t>({ 0x39, 0x00 }), std::to_array<uint8_t>({ 0x42, 0x00 }), std::to_array<uint8_t>({ 0xA2, 0x01 }) };
-
-        Xq = Hadamard(Xq);
-        Xp = Hadamard(Xp);
-
-        Xq = Multiply4(Xq, Xp);
-        Xp = Square4(Xp);
-
-        Xq = Multiply4(Xq, eHat);
-        Xp = Multiply4(Xp, eHat);
-
-        Xq = Hadamard(Xq);
-        Xp = Hadamard(Xp);
-
-        Xq = Square4(Xq);
-        Xp = Square4(Xp);
-
-        const auto [lX, lY, lZ, lW] = Xq.asTuple();
-        const auto [rX, rY, rZ, rW] = Xd.asTuple();
-
-        return { Multiply4(Xp, e), {lX, lY * rY, lZ * rZ, lW * rW} };
-    }
-    constexpr K512_t Ladder(K512_t Xq, const K512_t &Xd, const K256_t &Scalars)
-    {
-        K512_t Xp{ std::to_array<uint8_t>({ 0x0B, 0x00 }), std::to_array<uint8_t>({ 0x16, 0x00 }), std::to_array<uint8_t>({ 0x13, 0x00 }), std::to_array<uint8_t>({ 0x03, 0x00 }) };
-        uint8_t Previous{};
-
-        for (int i = 250; i >= 0; i--)
-        {
-            const auto Bit = (Scalars[i >> 3] >> (i & 0x07)) & 1;
-            const auto doSwap = Bit ^ Previous;
+            const auto Bit = (Scalar[i >> 3] >> (i & 0x07)) & 1;
+            const auto Swap = Bit ^ Previous;
             Previous = Bit;
-            NegateX(Xq);
 
-            Swap(Xp, Xq, doSwap);
-            std::tie(Xp, Xq) = xDBLADD(Xp, Xq, Xd);
+            // Negate X.
+            Q[0] = Q[0].Negate();
+            CSWAP(Q, P, Swap);
+
+            std::tie(P, Q) = DBLADD(P, Q, Wrapped);
         }
 
-        NegateX(Xp);
+        // Negate X.
+        P[0] = P[0].Negate();
+        CSWAP(Q, P, Previous);
 
-        Swap(Xp, Xq, Previous);
-        return Xp;
+        return { P };
     }
-    constexpr K512_t Ladder(const K256_t &Scalars)
+    constexpr Kummerpoint_t Ladder(const std::array<uint8_t, 32> &Scalar)
     {
-        // Wrapped Kummer base-point.
-        constexpr K512_t WBP
+        constexpr Kummerpoint_t Basepoint =
         {
-            std::to_array<uint8_t>({0x00}),
-            std::to_array<uint8_t>({ 0x48, 0x1A, 0x93, 0x4E, 0xA6, 0x51, 0xB3, 0xAE, 0xE7, 0xC2, 0x49, 0x20, 0xDC, 0xC3, 0xE0, 0x1B }),
-            std::to_array<uint8_t>({ 0xDF, 0x36, 0x7E, 0xE0, 0x18, 0x98, 0x65, 0x64, 0x30, 0xA6, 0xAB, 0x8E, 0xCD, 0x16, 0xB4, 0x23 }),
-            std::to_array<uint8_t>({ 0x1E, 0x44, 0x15, 0x72, 0x05, 0x3D, 0xAE, 0xC7, 0x4D, 0xA2, 0x47, 0x44, 0x38, 0x5C, 0xB3, 0x5D })
+            FE1271_t{},
+            { 0xaeb351a64e931a48ULL, 0x1be0c3dc2049c2e7ULL },
+            { 0x64659818e07e36dfULL, 0x23b416cd8eaba630ULL },
+            { 0xc7ae3d057215441eULL, 0x5db35c384447a24dULL }
         };
 
-        return Ladder(Unwrap(WBP), WBP, Scalars);
+        return Ladder(Unwrap(Basepoint), Basepoint, Scalar);
     }
 
-    // So we can transfer the points in a more manageable form.
-    constexpr std::tuple<K128_t, K128_t> Compress(const K512_t &Input)
+    // Evaluate one of the off-diagonal B_{ij}
+    constexpr Kummerpoint_t BII(const Kummerpoint_t &sP, const Kummerpoint_t &hQ)
     {
-        const auto [X, Y, Z, W] = Input.asTuple();
+        auto P = SQR4(sP);
+        auto Q = SQR4(hQ);
 
-        K128_t L1, L2, L3, L4;
+        P = MUL4(P, { Epsilon_hat[0], Epsilon_hat[1], Epsilon_hat[2], Epsilon_hat[3] });
+        Q = MUL4(Q, { Epsilon_hat[0], Epsilon_hat[1], Epsilon_hat[2], Epsilon_hat[3] });
 
-        // Matrix multiplication by kHat.
-        const std::array Premult = { kRow(W, Z, Y, X), kRow(Z, W, X, Y),
-                                     kRow(Y, X, W, Z), kRow(X, Y, Z, W) };
+        // Negate as hat[0] should be negative.
+        P[0] = P[0].Negate();
+        Q[0] = Q[0].Negate();
 
-        // Select a nice point.
-        L2 = [&]() {
-            if (!isZero(Premult[2])) return Invert(Premult[2]);
-            if (!isZero(Premult[1])) return Invert(Premult[1]);
-            if (!isZero(Premult[0])) return Invert(Premult[0]);
-            return Invert(Premult[3]);
+        const auto U = Kummerpoint_t
+        {
+            Dot({P[0],P[1],P[2],P[3]}, { Q[0], Q[1], Q[2], Q[3] }),
+            Dot({P[0],P[1],P[2],P[3]}, { Q[1], Q[0], Q[3], Q[2] }),
+            Dot({P[0],P[2],P[1],P[3]}, { Q[2], Q[0], Q[3], Q[1] }),
+            Dot({P[0],P[3],P[1],P[2]}, { Q[3], Q[0], Q[2], Q[1] })
+        };
+        Q = Kummerpoint_t
+        {
+            negDot({ U[0], U[1], U[2], U[3] }, { Kappa[0], Kappa[1], Kappa[2], Kappa[3] }),
+            negDot({ U[1], U[0], U[3], U[2] }, { Kappa[0], Kappa[1], Kappa[2], Kappa[3] }),
+            negDot({ U[2], U[3], U[0], U[1] }, { Kappa[0], Kappa[1], Kappa[2], Kappa[3] }),
+            negDot({ U[3], U[2], U[1], U[0] }, { Kappa[0], Kappa[1], Kappa[2], Kappa[3] })
+        };
+
+        Q = MUL4(Q, { Mu_hat[0], Mu_hat[1], Mu_hat[2], Mu_hat[3] });
+
+        // Negate as mu[0] should be negative.
+        Q[0] = Q[0].Negate();
+
+        return Q;
+    }
+    constexpr FE1271_t BIJ(const Kummerpoint_t &P, const Kummerpoint_t &Q, const Kummerpoint_t &Constants)
+    {
+        const auto A = P[0] * P[1];
+        const auto B = P[2] * P[3];
+        const auto C = Q[0] * Q[1];
+        const auto D = Q[2] * Q[3];
+
+        const auto X = (A - B) * (C - D) * Constants[2] * Constants[3];
+        const auto Y = B * D * (Constants[2] * Constants[3] + Constants[0] * Constants[1]);
+        const auto Z = (Y - X) * Constants[0] * Constants[1] * (Constants[1] * Constants[3] + Constants[0] * Constants[2]);
+
+        return Z * (Constants[1] * Constants[2] + Constants[0] * Constants[3]);
+    }
+
+    // Dot by k-hat and mu-hat to handle the sign switch.
+    constexpr FE1271_t kRow(const Kummerpoint_t &Value)
+    {
+        return
+            (Value[1] * Kappa_hat[1]) +
+            (Value[2] * Kappa_hat[2]) +
+            (Value[3] * Kappa_hat[3]) -
+            (Value[0] * Kappa_hat[0]);
+    }
+    constexpr FE1271_t mRow(const Kummerpoint_t &Value)
+    {
+        return
+            ((Value[1] + Value[1] - Value[0]) * Mu[0]) +
+            (Value[2] * Mu[2]) +
+            (Value[3] * Mu[3]);
+    }
+
+    // Mapping between K^2 and K^3.
+    constexpr Compressedpoint_t Compress(const Kummerpoint_t &Input)
+    {
+        const auto &[X, Y, Z, W] = Input;
+        const auto L1 = kRow({ W, Z, Y, X });
+        const auto L2 = kRow({ Z, W, X, Y });
+        const auto L3 = kRow({ Y, X, W, Z });
+        const auto L4 = kRow({ X, Y, Z, W });
+
+        // Tau = L3 != 0
+        const auto [Tau, Lambda] = [&]() -> std::pair<bool, FE1271_t>
+        {
+            if (!L3.isZero()) return { true,  L3.Invert() };
+            if (!L2.isZero()) return { false, L2.Invert() };
+            if (!L1.isZero()) return { false, L1.Invert() };
+
+            return { false, L4.Invert() };
         }();
 
         // Normalize.
-        L4 = Premult[3] * L2;
-        L1 = Premult[0] * L2;
-        L2 = Premult[1] * L2;
+        const auto l1 = L1 * Lambda;
+        const auto l2 = L2 * Lambda;
+        const auto l4 = L4 * Lambda;
 
-        // Tuples.
-        const auto Tau = !isZero(Premult[2]);
-        const auto K2 = getK2(L1, L2, Tau);
-        const auto K3 = getK3(L1, L2, Tau);
+        // Evaluate the polynomial.
+        const auto K2 = evalK2(l1, l2, Tau);
+        const auto K3 = evalK3(l1, l2, Tau);
 
-        // K_2 * L4 - K_3
-        L3 = (K2.first * L4) - std::get<0>(K3);
+        const auto R = K2 * l4 - K3;
+        const auto Sigma = Bigint::getLSB(R);
 
-        L1.Freeze();
-        L2.Freeze();
-        L3.Freeze();
-
-        L1[15] |= uint8_t(uint8_t(Tau) << 7);
-        L2[15] |= uint8_t((L3[0] & uint8_t(1)) << 7);
-
-        return { L1, L2 };
+        // Save the signs in L1 and L2's unused bits.
+        return { Bigint::setMSB(l1, Tau), Bigint::setMSB(l2, Sigma) };
     }
-    constexpr K512_t Decompress(const K256_t &Input)
+    constexpr std::optional<Kummerpoint_t> Decompress(const Compressedpoint_t &Input)
     {
-        K128_t T0, T1, T2, T3, T4, T5;
-        auto [L1, L2] = Input.asPair();
+        Kummerpoint_t L{};
 
-        const auto Sigma = ((L2[15] & uint8_t(0x80)) >> 7) == uint8_t(1);
-        const auto Tau = ((L1[15] & uint8_t(0x80)) >> 7) == uint8_t(1);
-        L1[15] &= uint8_t(0x7F);
-        L2[15] &= uint8_t(0x7F);
+        // We store the sign of compressed values in the top bit.
+        const auto Tau = Bigint::getMSB(Input[0]), Sigma = Bigint::getMSB(Input[1]);
+        const FE1271_t L1 = Bigint::setMSB(Input[0], 0), L2 = Bigint::setMSB(Input[1], 0);
 
-        std::tie(T1, T4) = getK2(L1, L2, Tau);
-        std::tie(T3, T4) = getK4(L1, L2, Tau);
-        std::tie(T2, T4, T5) = getK3(L1, L2, Tau);
+        // Evaluate the polynomials.
+        const auto K2 = evalK2(L1, L2, Tau);
+        const auto K3 = evalK3(L1, L2, Tau);
+        const auto K4 = evalK4(L1, L2, Tau);
 
-        // K2_X = 0
-        if (isZero(T1))
+        if (K2.isZero())
         {
-            T2.Freeze();
-
-            // K3_Z = 0
-            if (isZero(T2))
+            if (K3.isZero())
             {
                 // Invalid compression.
-                if (!isZero(L1) || !isZero(L2) || Tau || Sigma) return {};
-                else
-                {
-                    T0 = T1 = T2 = T3 = {};
-                    T3[0] = uint8_t(1);
-                }
-            }
+                if (!L1.isZero() | !L2.isZero() | Tau | Sigma)
+                    return std::nullopt;
 
-            //
-            else if ((uint8_t(Sigma) ^ T2[0]) != uint8_t(1))
+                // Identity.
+                L = { 0, 0, 0, 1 };
+            }
+            else if (Sigma != Bigint::getLSB(K3.Negate()))
             {
-                T0 = T2 * L1;
-                T0 += T0;
-                T1 = T2 * L2;
-                T1 += T1;
-
-                if (Tau) T2 += T2;
-                else T2 = {};
+                // K4 = 2 * K3 * L4
+                L = { (L1 * K3) + (L1 * K3), (L2 * K3) + (L2 * K3), (Tau * K3) + (Tau * K3), K4 };
             }
-
-            // Invalid compression.
             else
             {
-                return {};
+                // Invalid compression.
+                return std::nullopt;
             }
         }
-
         else
         {
-            T4 = T2 * T2;
-            T5 = T1 * T3;
-            T4 = T4 - T5;
+            const auto Delta = (K3 * K3) - (K2 * K4);
+            auto [R, Valid] = Delta.trySQRT();
 
-            // Invalid compression.
-            const auto Root = hasSQRT(T4, Sigma);
-            if (isZero(Root)) return {};
+            // TODO TODO TEST REMOVE SIGN
 
-            T3 = T2 + Root;
+            // Select the right root.
+            if (Bigint::getLSB(R) ^ Sigma)
+                R = R.Negate();
 
-            if (Tau) T2 = T1;
-            else T2 = {};
+            // No preimage in K^3
+            if (!Valid) return std::nullopt;
 
-            T0 = T1 * L1;
-            T1 = T1 * L2;
+            // K2 * L4 = K3 + R
+            L = { K2 * L1, K2 * L2, K2 * Tau, K3 + R };
         }
 
-        // Matrix multiplication by mu (inverse).
-        return { mRow(T3, T2, T1, T0), mRow(T2, T3, T0, T1),
-                 mRow(T1, T0, T3, T2), mRow(T0, T1, T2, T3) };
+        // Remap from K^3 to K^2
+        return Kummerpoint_t
+        {
+            mRow({L[3], L[2], L[1], L[0]}),
+            mRow({L[2], L[3], L[0], L[1]}),
+            mRow({L[1], L[0], L[3], L[2]}),
+            mRow({L[0], L[1], L[2], L[3]})
+        };
     }
 
-    // Verification.
-    constexpr bool Check(K512_t P, K512_t Q, const K256_t &Rcomp)
+    // Verify the quadratic relationship.
+    constexpr bool isQuad(const FE1271_t &Bij, const FE1271_t &Bjj, const FE1271_t &Bii, const FE1271_t &R1, const FE1271_t &R2)
     {
-        constexpr K512_t muHat{ std::to_array<uint8_t>({ 0x21, 0x00 }), std::to_array<uint8_t>({ 0x0B, 0x00 }), std::to_array<uint8_t>({ 0x11, 0x00 }), std::to_array<uint8_t>({ 0x31, 0x00 }) };
+        // BjjR1^2 - 2*C*BijR1R2 + BiiR2^2 == 0
 
-        // Invalid compression.
-        auto R = Decompress(Rcomp);
-        if (isZero(R)) return false;
+        const auto A = Bjj * R1 * R1;
+        const auto B = CurveC * Bij * R1 * R2;
+        const auto C = Bii * R2 * R2;
 
-        P = NegateW(Hadamard(NegateX(P)));
-        Q = NegateW(Hadamard(NegateX(Q)));
-        R = NegateW(Hadamard(NegateX(R)));
+        return (A - B - B + C).isZero();
+    }
 
-        const auto [PX, PY, PZ, PW] = P.asTuple();
-        const auto [QX, QY, QZ, QW] = Q.asTuple();
-        const auto [RX, RY, RZ, RW] = R.asTuple();
-        const auto [muX, muY, muZ, muW] = muHat.asTuple();
-        const auto [BiiX, BiiY, BiiZ, BiiW] = biiValues(P, Q).asTuple();
+    // If R exists in { P + Q, P - Q }
+    constexpr bool Check(const Kummerpoint_t &sP, const Kummerpoint_t &hQ, const Kummerpoint_t &r)
+    {
+        const auto P = negHadamard(sP), Q = negHadamard(hQ), R = negHadamard(r);
+        const auto Bii = BII(P, Q);
 
         // B_{1,2}
-        auto Bij = bijValues(P, Q, muHat);
-        auto Invalid = !isQuad(Bij, BiiY, BiiX, RX, RY);
-        if constexpr (!Constanttime) { if (Invalid) return false; }
+        auto Bij = BIJ(P, Q, { Mu_hat[0], Mu_hat[1], Mu_hat[2], Mu_hat[3] });
+        auto Invalid = !isQuad(Bij, Bii[1], Bii[0], R[0], R[1]);
 
         // B_{1,3}
-        Bij = bijValues({ PX, PZ, PY, PW }, { QX, QZ, QY, QW }, { muX, muZ, muY, muW });
-        Invalid |= !isQuad(Bij, BiiZ, BiiX, RX, RZ);
-        if constexpr (!Constanttime) { if (Invalid) return false; }
+        Bij = BIJ({ P[0], P[2], P[1], P[3] }, { Q[0], Q[2], Q[1], Q[3] }, { Mu_hat[0], Mu_hat[2], Mu_hat[1], Mu_hat[3] });
+        Invalid |= !isQuad(Bij, Bii[2], Bii[0], R[0], R[2]);
 
         // B_{1,4}
-        Bij = bijValues({ PX, PW, PY, PZ }, { QX, QW, QY, QZ }, { muX, muW, muY, muZ });
-        Invalid |= !isQuad(Bij, BiiW, BiiX, RX, RW);
-        if constexpr (!Constanttime) { if (Invalid) return false; }
+        Bij = BIJ({ P[0], P[3], P[1], P[2] }, { Q[0], Q[3], Q[1], Q[2] }, { Mu_hat[0], Mu_hat[3], Mu_hat[1], Mu_hat[2] });
+        Invalid |= !isQuad(Bij, Bii[3], Bii[0], R[0], R[3]);
 
         // B_{2,3}
-        Bij = bijValues({ PY, PZ, PX, PW }, { QY, QZ, QX, QW }, { muY, muZ, muX, muW });
-        Bij = Negate(Bij);
-        Invalid |= !isQuad(Bij, BiiZ, BiiY, RY, RZ);
-        if constexpr (!Constanttime) { if (Invalid) return false; }
+        Bij = FE1271_t{} - BIJ({ P[1], P[2], P[0], P[3] }, { Q[1], Q[2], Q[0], Q[3] }, { Mu_hat[1], Mu_hat[2], Mu_hat[0], Mu_hat[3] });
+        Invalid |= !isQuad(Bij, Bii[2], Bii[1], R[1], R[2]);
 
         // B_{2,4}
-        Bij = bijValues({ PY, PW, PX, PZ }, { QY, QW, QX, QZ }, { muY, muW, muX, muZ });
-        Bij = Negate(Bij);
-        Invalid |= !isQuad(Bij, BiiW, BiiY, RY, RW);
-        if constexpr (!Constanttime) { if (Invalid) return false; }
+        Bij = FE1271_t{} - BIJ({ P[1], P[3], P[0], P[2] }, { Q[1], Q[3], Q[0], Q[2] }, { Mu_hat[1], Mu_hat[3], Mu_hat[0], Mu_hat[2] });
+        Invalid |= !isQuad(Bij, Bii[3], Bii[1], R[1], R[3]);
 
         // B_{3,4}
-        Bij = bijValues({ PZ, PW, PX, PY }, { QZ, QW, QX, QY }, { muZ, muW, muX, muY });
-        Bij = Negate(Bij);
-        Invalid |= !isQuad(Bij, BiiW, BiiZ, RZ, RW);
+        Bij = FE1271_t{} - BIJ({ P[2], P[3], P[0], P[1] }, { Q[2], Q[3], Q[0], Q[1] }, { Mu_hat[2], Mu_hat[3], Mu_hat[0], Mu_hat[1] });
+        Invalid |= !isQuad(Bij, Bii[3], Bii[2], R[2], R[3]);
 
         return !Invalid;
     }
 }
 
+// API implementation.
 namespace qDSA
 {
+    using namespace Algorithm;
+    using namespace Scalar;
+
     // Create a keypair from a random seed.
     constexpr Publickey_t getPublickey(const Privatekey_t &Privatekey)
     {
-        using namespace qDSA::Internal;
-
+        // PK = [d']P
         const auto Scalar = getScalar(Privatekey);
-        const auto Ladders = Ladder(Scalar);
-        const auto [X, Y] = Compress(Ladders);
-        return K256_t{ X, Y }.RAW;
+        const auto dP = Ladder(Scalar.asBytes());
+        const auto Q = Compress(dP);
+
+        return std::bit_cast<Publickey_t>(Q);
     }
     template <typename T> constexpr std::pair<Publickey_t, Privatekey_t> Createkeypair(const T &Seed)
     {
@@ -1255,26 +1154,23 @@ namespace qDSA
     }
 
     // Compute a shared secret between two keypairs (A.PK, B.SK) == (B.PK, A.SK)
-    constexpr Sharedkey_t Generatesecret(const Publickey_t &Publickey, const Privatekey_t &Privatekey)
+    constexpr std::optional<Sharedkey_t> Generatesecret(const Publickey_t &Publickey, const Privatekey_t &Privatekey)
     {
-        using namespace qDSA::Internal;
+        const auto PK = Decompress(std::bit_cast<Compressedpoint_t>(Publickey));
+        if (!PK) return std::nullopt;
 
-        const auto PK = Decompress(K256_t{ Publickey });
-        const auto PKW = Wrap(PK);
-
-        const auto Secret = Ladder(PK, PKW, getScalar(Privatekey));
-        const auto [A, B] = Compress(Secret);
-        return A.RAW + B.RAW;
+        const auto Scalar = getScalar(Privatekey);
+        const auto Secret = Ladder(*PK, Wrap(*PK), Scalar.asBytes());
+        return std::bit_cast<Sharedkey_t>(Compress(Secret));
     }
 
     // Create a signature for the provided message, somewhat hardened against hackery.
-    template <cmp::Range_t C> constexpr Signature_t Sign(const Publickey_t &Publickey, const Privatekey_t &Privatekey, const C &Message)
+    template <cmp::Sequential_t C> constexpr Signature_t Sign(const Publickey_t &Publickey, const Privatekey_t &Privatekey, const C &Message)
     {
-        using namespace qDSA::Internal;
         const auto Buffer = cmp::getBytes(Message);
 
-        // Get the first point.
-        const auto P = [&]()
+        // r = H(d'' || M)
+        const auto r = [&]()
         {
             // 32 bytes of deterministic 'randomness'.
             Blob_t Local; Local.reserve(Buffer.size() + 32);
@@ -1283,52 +1179,57 @@ namespace qDSA
 
             return getScalar(Hash::SHA512(Local));
         }();
-        const auto [PZ, PW] = Compress(Ladder(P));
 
-        // Get the second point.
-        const auto Q = [&]()
+        // Compressed [r]P
+        const auto rP = Compress(Ladder(r.asBytes()));
+
+        // h = H(R || Q || M)
+        const auto h = [&]()
         {
             Blob_t Local; Local.reserve(16 + 16 + 32 + Buffer.size());
-            Local.append(PZ.RAW.data(), PZ.RAW.size());
-            Local.append(PW.RAW.data(), PW.RAW.size());
-            Local.append(Publickey.data(), Publickey.size());
+            Local.append(rP[0].asBytes().data(), 16);
+            Local.append(rP[1].asBytes().data(), 16);
+            Local.append(Publickey.data(), 32);
             Local.append(Buffer.data(), Buffer.size());
 
             return getScalar(Hash::SHA512(Local));
         }();
 
-        // Get the third point.
-        const auto W = opsScalar(P, getPositive(Q), getScalar(Privatekey));
+        // Set the scalar positive.
+        const auto H = Bigint::getLSB(h) ? Scalar::Negate(h) : h;
 
-        // Share with the world..
-        return PZ.RAW + PW.RAW + W.RAW;
+        // s = (r - hd') % N.
+        const auto Scalar = Scalarops(r, H, getScalar(Privatekey));
+
+        // Signature = [r]P || s
+        return uint512_t{ std::bit_cast<uint256_t>(rP) + Scalar }.asBytes();
     }
 
     // Verify that the message was signed by the owner of the public key.
-    template <cmp::Range_t C> constexpr bool Verify(const Publickey_t &Publickey, const Signature_t &Signature, const C &Message)
+    template <cmp::Sequential_t C> constexpr bool Verify(const Publickey_t &Publickey, const Signature_t &Signature, const C &Message)
     {
-        using namespace qDSA::Internal;
         const auto Buffer = cmp::getBytes(Message);
+        const auto [rP, Scalar] = cmp::splitArray<32>(Signature);
+        const auto R = Decompress(std::bit_cast<Compressedpoint_t>(rP));
+        const auto dP = Decompress(std::bit_cast<Compressedpoint_t>(Publickey));
 
-        // Validate compression of the first point.
-        const auto P = Decompress(K256_t(Publickey));
-        if (isZero(P)) [[unlikely]] return false;
+        // Invalid public-key or signature.
+        if (!dP || !R) return false;
 
-        // Second point.
-        const auto Q = [&]()
+        // H(R || Q || M)
+        const auto h = [&]()
         {
-            Blob_t Local; Local.reserve(64 + Buffer.size());
-            Local.append(Signature.data(), Signature.size() / 2);
-            Local.append(Publickey.data(), Publickey.size());
+            Blob_t Local; Local.reserve(32 + 32 + Buffer.size());
+            Local.append(Signature.data(), 32);
+            Local.append(Publickey.data(), 32);
             Local.append(Buffer.data(), Buffer.size());
 
             return getScalar(Hash::SHA512(Local));
         }();
 
-        // Third point.
-        const auto [High, Low] = K512_t(Signature).asPair();
-        const auto W = Ladder(P, Wrap(P), Q);
+        const auto sP = Ladder(getScalar(Scalar).asBytes());
+        const auto hQ = Ladder(*dP, Wrap(*dP), h.asBytes());
 
-        return Check(Ladder(getScalar(Low.RAW)), W, High);
+        return Check(sP, hQ, *R);
     }
 }
