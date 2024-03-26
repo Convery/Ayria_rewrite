@@ -87,9 +87,9 @@ namespace HWID
                     Entry.remove_prefix(Headerlength);
 
                     for (uint8_t i = 1; i < Stringindex; ++i)
-                        Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
+                        Entry.remove_prefix(std::strlen((const char *)Entry.data()) + 1);
 
-                    Result.MOBOSerial = (char *)Entry.data();
+                    Result.MOBOSerial = (const char *)Entry.data();
                 }
 
                 // Case serial.
@@ -99,9 +99,9 @@ namespace HWID
                     Entry.remove_prefix(Headerlength);
 
                     for (uint8_t i = 1; i < Stringindex; ++i)
-                        Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
+                        Entry.remove_prefix(std::strlen((const char *)Entry.data()) + 1);
 
-                    Result.Caseserial = (char *)Entry.data();
+                    Result.Caseserial = (const char *)Entry.data();
                 }
 
                 // RAM Serial.
@@ -111,9 +111,9 @@ namespace HWID
                     Entry.remove_prefix(Headerlength);
 
                     for (uint8_t i = 1; i < Stringindex; ++i)
-                        Entry.remove_prefix(std::strlen((char *)Entry.data()) + 1);
+                        Entry.remove_prefix(std::strlen((const char *)Entry.data()) + 1);
 
-                    const std::string Current((char *)Entry.data());
+                    const std::string Current((const char *)Entry.data());
                     const auto Hashed = Hash::SHA256(Current);
 
                     if (Result.RAMSerial.empty())
