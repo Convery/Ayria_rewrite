@@ -45,7 +45,7 @@ namespace Hash
         unsigned int Buffersize = 20;
         unsigned char Buffer[20]{};
 
-        HMAC(EVP_sha1(), Key, (int)Keysize, (uint8_t *)Input, (int)Size, Buffer, &Buffersize);
+        HMAC(EVP_sha1(), Key, (int)Keysize, (const uint8_t *)Input, (int)Size, Buffer, &Buffersize);
         return std::bit_cast<std::array<uint8_t, 20>>(Buffer);
     }
     inline std::array<uint8_t, 32> HMACSHA256(const void *Input, const size_t Size, const void *Key, const size_t Keysize)
@@ -53,7 +53,7 @@ namespace Hash
         unsigned int Buffersize = 32;
         unsigned char Buffer[32]{};
 
-        HMAC(EVP_sha256(), Key, (int)Keysize, (uint8_t *)Input, (int)Size, Buffer, &Buffersize);
+        HMAC(EVP_sha256(), Key, (int)Keysize, (const uint8_t *)Input, (int)Size, Buffer, &Buffersize);
         return std::bit_cast<std::array<uint8_t, 32>>(Buffer);
     }
     inline std::array<uint8_t, 64> HMACSHA512(const void *Input, const size_t Size, const void *Key, const size_t Keysize)
@@ -61,7 +61,7 @@ namespace Hash
         unsigned int Buffersize = 64;
         unsigned char Buffer[64]{};
 
-        HMAC(EVP_sha512(), Key, (int)Keysize, (uint8_t *)Input, (int)Size, Buffer, &Buffersize);
+        HMAC(EVP_sha512(), Key, (int)Keysize, (const uint8_t *)Input, (int)Size, Buffer, &Buffersize);
         return std::bit_cast<std::array<uint8_t, 64>>(Buffer);
     }
 

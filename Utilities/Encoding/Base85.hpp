@@ -311,14 +311,14 @@ namespace Base85
     namespace ASCII85
     {
         // ASCII85 supports compression, while not used in our encoder, we might need to decompress it first.
-        template <cmp::Byte_t T, size_t N> constexpr auto isCompressed(const std::span<const T, N> Input)
+        template <cmp::Byte_t T, size_t N> constexpr auto isCompressed(const std::span<const T, N> &Input)
         {
             return std::ranges::any_of(Input.begin(), Input.end(), [](auto Item)
             {
                 return Item == T('z') || Item == T('y');
             });
         }
-        template <cmp::Byte_t T, size_t N> constexpr auto Decompress(const std::span<const T, N> Input)
+        template <cmp::Byte_t T, size_t N> constexpr auto Decompress(const std::span<const T, N> &Input)
         {
             std::basic_string<T> Buffer; Buffer.reserve(Input.size() + 32);
             for (auto &Item : Input)

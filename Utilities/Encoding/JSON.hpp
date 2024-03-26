@@ -157,12 +157,12 @@ namespace JSON
             if (isType<Array_t>()) return std::get<Array_t>(Storage)[i];
             else { static Value_t Dummy{}; return Dummy; }
         }
-        template <cmp::Byte_t U> Value_t &operator[](const std::basic_string_view<U> &Key)
+        template <cmp::Byte_t U> Value_t &operator[](const std::basic_string_view<U> Key)
         {
             if (isType<Object_t>()) return std::get<Object_t>(Storage)[Encoding::toUTF8(Key)];
             else { static Value_t Dummy{}; return Dummy; }
         }
-        template <cmp::Byte_t U> const Value_t &operator[](const std::basic_string_view<U> &Key) const
+        template <cmp::Byte_t U> const Value_t &operator[](const std::basic_string_view<U> Key) const
         {
                         if (isType<Object_t>())
             {
@@ -199,7 +199,7 @@ namespace JSON
             return Defaultvalue;
         }
         template <typename T = Value_t, cmp::Byte_t U> requires(std::is_convertible_v<Value_t, T>)
-        CXPR T value(const std::basic_string_view<U> &Key, const T &Defaultvalue = {}) const
+        CXPR T value(const std::basic_string_view<U> Key, const T &Defaultvalue = {}) const
         {
             if (const auto Value = operator[](Encoding::toUTF8(Key)))
                 return Value;

@@ -42,7 +42,7 @@ class Ringbuffer_t
         reference operator*() const noexcept { return Data[Index]; }
         pointer operator->() const noexcept { return Data + Index; }
 
-        bool operator==(const std::default_sentinel_t &) const noexcept { return Count == 0; }
+        bool operator==(const std::default_sentinel_t) const noexcept { return Count == 0; }
         bool operator==(const Iterator_t &Right) const noexcept { return Count == Right.Count; }
 
         Iterator_t &operator++() noexcept { Index = Advance(Index, -1); --Count; return *this; }

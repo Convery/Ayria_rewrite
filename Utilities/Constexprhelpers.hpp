@@ -683,7 +683,7 @@ namespace cmp
         }
         return T(Sum);
     }
-    template <std::floating_point T = double> constexpr T pow(const T &Base, const double &Exponent)
+    template <std::floating_point T = double> constexpr T pow(const T &Base, const double Exponent)
     {
         // Prefer optimized implementations.
         if (!std::is_constant_evaluated())

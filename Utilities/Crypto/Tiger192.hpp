@@ -622,7 +622,7 @@ namespace Hash
             State.tryFlush();
 
             // Save how many bytes we originally had.
-            const auto Messagelength = static_cast<uint64_t>(State.Blockcount * 64 + State.Fillcount * 8);
+            const auto Messagelength = static_cast<uint64_t>(State.Blockcount * 64ULL + State.Fillcount * 8ULL);
 
             // Add padding as necessary.
             auto Block = std::bit_cast<std::array<uint8_t, 64>>(State.Block);
