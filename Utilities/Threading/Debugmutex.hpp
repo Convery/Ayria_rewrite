@@ -11,10 +11,10 @@
 struct Debugmutex_t
 {
     std::thread::id Currentowner{};
-    std::timed_mutex Internal{};
+    std::timed_mutex Mutex{};
 
     // Unified error func.
-    [[noreturn]] static void Break(const std::string &&Message) noexcept
+    [[noreturn]] static void Break(const std::string &Message)
     {
         (void)std::fprintf(stderr, Message.c_str());
 
@@ -26,31 +26,33 @@ struct Debugmutex_t
         __builtin_trap();
         #endif
 
-        // Incase someone included this in runtime code.
+        // Incase someone included this in release mode.
         volatile size_t Intentional_nullderef = 0xDEAD;
         *(size_t *)Intentional_nullderef = 0xDEAD;
     }
 
-    void lock() noexcept
+    void lock()
     {
         if (Currentowner == std::this_thread::get_id())
         {
-            Break(std::format("Debugmutex: Recursive lock by thread {:X}\n", *(uint32_t *)&Currentowner));
+            Break(std::format("Debugmutex: Recursive lock by thread {:X}\n", std::bit_cast<uint32_t>(Currentowner)));
         }
 
-        if (Internal.try_lock_for(std::chrono::seconds(10)))
+        if (!Mutex.try_lock_for(std::chrono::seconds(10)))
         {
-            Currentowner = std::this_thread::get_id();
+            Break(std::format("Debugmutex: Timeout, locked by thread {:X}\n", std::bit_cast<uint32_t>(Currentowner)));
         }
-        else
-        {
-            Break(std::format("Debugmutex: Timeout, locked by thread {:X}\n", *(uint32_t *)&Currentowner));
-        }
+
+        Currentowner = std::this_thread::get_id();
     }
-    void unlock() noexcept
+    void unlock()
     {
-        (void)Internal.try_lock();
+        if (Currentowner != std::this_thread::get_id())
+        {
+            Break(std::format("Debugmutex: Thread {:X} tried to unlock a mutex owned by {:X}\n", std::bit_cast<uint32_t>(std::this_thread::get_id()), std::bit_cast<uint32_t>(Currentowner)));
+        }
+
         Currentowner = {};
-        Internal.unlock();
+        Mutex.unlock();
     }
 };

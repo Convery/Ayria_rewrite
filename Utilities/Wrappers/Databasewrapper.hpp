@@ -101,7 +101,7 @@ namespace sqlite
 
                     const auto Size = sqlite3_column_bytes(Statement, Index);
                     const auto Elements = Size / sizeof(typename T::value_type);
-                    const auto Buffer = (typename T::value_type *)sqlite3_column_blob(Statement, Index);
+                    const auto Buffer = (const typename T::value_type *)sqlite3_column_blob(Statement, Index);
 
                     return T(Buffer, Elements);
                 }
@@ -109,7 +109,7 @@ namespace sqlite
                 {
                     const auto Size = sqlite3_column_bytes(Statement, Index);
                     const auto Elements = Size / sizeof(typename T::value_type);
-                    const auto Buffer = (typename T::value_type *)sqlite3_column_blob(Statement, Index);
+                    const auto Buffer = (const typename T::value_type *)sqlite3_column_blob(Statement, Index);
 
                     return T(Buffer, Elements);
                 }
