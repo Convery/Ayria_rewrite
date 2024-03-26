@@ -332,7 +332,7 @@ namespace HWID
 
                 return false;
             };
-            const auto IDE = [](HANDLE Devicehandle, const IDEREGS &Registers, std::array<uint8_t, 512> *Result)
+            const auto IDE = [](HANDLE Devicehandle, const IDEREGS Registers, std::array<uint8_t, 512> *Result)
             {
                 std::array<uint8_t, 12 + 512> Buffer{};
                 *(IDEREGS *)&Buffer[0] = Registers;
@@ -347,7 +347,7 @@ namespace HWID
 
                 return false;
             };
-            const auto SCSI_miniport = [](HANDLE Devicehandle, const IDEREGS &Registers, std::array<uint8_t, 512> *Result)
+            const auto SCSI_miniport = [](HANDLE Devicehandle, const IDEREGS Registers, std::array<uint8_t, 512> *Result)
             {
                 std::array<uint8_t, sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDINPARAMS) + 512> Buffer{};
                 *(SRB_IO_CONTROL *)&Buffer[0] = SRB_IO_CONTROL{ sizeof(SRB_IO_CONTROL), { 'S', 'C', 'S', 'I', 'D', 'I', 'S', 'K' }, 60, 0x1B0501, 0, sizeof(SENDCMDINPARAMS) + 511 };
@@ -462,8 +462,12 @@ namespace HWID
             const auto Size = *(uint16_t *)&Response[112];
             std::vector<uint8_t> Result(Size);
 
-            for (int i = 0; i < Size; ++i)
-                Result[i] = Response[114 + i];
+            // In-case some VM returns silly data.
+            if ((Size + 114) < sizeof(Response))
+            {
+                for (int i = 0; i < Size; ++i)
+                    Result[i] = Response[114 + i];
+            }
 
             CloseHandle(Handle);
             return Result;
@@ -475,7 +479,7 @@ namespace HWID
     {
         D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME Adapter{};
         std::wcscpy(Adapter.DeviceName, L"\\\\.\\DISPLAY1");
-        D3DKMTOpenAdapterFromGdiDisplayName(&Adapter);
+        (void)D3DKMTOpenAdapterFromGdiDisplayName(&Adapter);
 
         // Shouldn't happen..
         if (Adapter.hAdapter == 0)

@@ -207,7 +207,7 @@ struct Bytebuffer_t
             return false;
 
         // If there's a buffer, just memcpy into it.
-        if (Buffer) std::memcpy(Buffer, data(true), Size);
+        if (Buffer) if (const auto Data = data(true); Data) std::memcpy(Buffer, Data, Size);
 
         Internaliterator += Size;
         return true;
@@ -238,9 +238,9 @@ struct Bytebuffer_t
             // Do not use spans for strings, they are a headache to deal with.
             if constexpr (cmp::isDerivedEx<Type, std::span>)
             {
-                if constexpr (cmp::isDerivedEx<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char>) assert(false);
-                if constexpr (cmp::isDerivedEx<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, char8_t>) assert(false);
-                if constexpr (cmp::isDerivedEx<Type, std::span> && std::is_same_v<std::decay_t<typename Type::value_type>, wchar_t>) assert(false);
+                if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, char>) assert(false);
+                if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, char8_t>) assert(false);
+                if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, wchar_t>) assert(false);
             }
 
             if constexpr (std::is_same_v<std::decay_t<typename Type::value_type>, uint8_t>) return BB_BLOB;
@@ -361,7 +361,7 @@ struct Bytebuffer_t
             else
             {
                 // Strings are null-terminated, so just initialize from the pointer.
-                Buffer = Type((typename Type::value_type *)data(true));
+                Buffer = Type((const typename Type::value_type *)data(true));
 
                 // Sanity checking.
                 if constexpr (std::is_same_v<typename Type::value_type, char>) assert(std::isalnum(Buffer.front()));
@@ -623,14 +623,15 @@ struct Protobuffer_t : Bytebuffer_t
             Input >>= 7;
         }
 
-        // Clear MSB.
-        Buffer[Size] &= 0x7F;
-
         // Need at least 1 byte.
         if (Size == 0) Size = 1;
+
+        // Clear MSB.
+        Buffer[Size - 1] &= 0x7F;
+
         rawWrite(Size, Buffer.data());
     }
-    void EncodeSTRING(const std::u8string Input)
+    void EncodeSTRING(const std::u8string &Input)
     {
         EncodeVARINT(Input.size());
         rawWrite(Input.size(), Input.data());
@@ -688,7 +689,7 @@ struct Protobuffer_t : Bytebuffer_t
     // Tags are silly things.
     void EncodeTAG(uint32_t ID, Wiretype_t Type)
     {
-        const uint64_t Tag = (ID << 3) | uint8_t(Type);
+        const uint64_t Tag = (uint64_t(ID) << 3) | uint8_t(Type);
         EncodeVARINT(Tag);
     }
     std::pair<uint32_t, Wiretype_t> DecodeTAG()

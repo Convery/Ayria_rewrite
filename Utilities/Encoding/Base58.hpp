@@ -14,12 +14,14 @@ namespace Base58
     constexpr size_t Decodesize(size_t N)
     {
         if (N == std::dynamic_extent)
-            return std::dynamic_extent; return size_t(N * size_t{ 733 } / 1000.0f + 0.5f);
+            return std::dynamic_extent;
+        return size_t(N * size_t{ 733 } / 1000.0f + 0.5f);
     }
     constexpr size_t Encodesize(size_t N)
     {
         if (N == std::dynamic_extent)
-            return std::dynamic_extent; return size_t(N * size_t{ 137 } / 100.0f + 0.5f);
+            return std::dynamic_extent;
+        return size_t(N * size_t{ 137 } / 100.0f + 0.5f);
     }
 
     namespace Internal
@@ -144,7 +146,7 @@ namespace Base58
             }
 
             // Set leading zeros.
-            for (size_t i = 0; i < N && Input[i] == '1'; i++)
+            for (size_t i = 0; i < Encodesize(N) && Input[i] == '1'; i++)
                 Buffer[Outputposition++] = 0;
 
             std::ranges::reverse(Buffer.begin(), Buffer.begin() + Outputposition);
@@ -174,7 +176,7 @@ namespace Base58
             }
 
             // Set leading zeros.
-            for (size_t i = 0; i < N && Input[i] == '1'; i++)
+            for (size_t i = 0; i < Encodesize(N) && Input[i] == '1'; i++)
                 Buffer[Outputposition++] = 0;
 
             std::ranges::reverse(Buffer.begin(), Buffer.begin() + Outputposition);

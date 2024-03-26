@@ -211,19 +211,19 @@ namespace qDSA::Detail
             return Result;
         }
 
-        friend constexpr Bigint_t<Bits> operator|(const Bigint_t<Bits> &Left, const uint64_t &Right)
+        friend constexpr Bigint_t<Bits> operator|(const Bigint_t<Bits> &Left, const uint64_t Right)
         {
             Bigint_t<Bits> Result = Left;
             Result[0] |= Right;
             return Result;
         }
-        friend constexpr Bigint_t<Bits> operator&(const Bigint_t<Bits> &Left, const uint64_t &Right)
+        friend constexpr Bigint_t<Bits> operator&(const Bigint_t<Bits> &Left, const uint64_t Right)
         {
             Bigint_t<Bits> Result = Left;
             Result[0] &= Right;
             return Result;
         }
-        friend constexpr Bigint_t<Bits> operator^(const Bigint_t<Bits> &Left, const uint64_t &Right)
+        friend constexpr Bigint_t<Bits> operator^(const Bigint_t<Bits> &Left, const uint64_t Right)
         {
             Bigint_t<Bits> Result = Left;
             Result[0] ^= Right;
@@ -233,9 +233,9 @@ namespace qDSA::Detail
         // Compound operators, should be optimized out.
         friend constexpr Bigint_t<Bits> &operator<<=(Bigint_t<Bits> &Value, size_t Shift) { Value = Value << Shift; return Value; }
         friend constexpr Bigint_t<Bits> &operator>>=(Bigint_t<Bits> &Value, size_t Shift) { Value = Value >> Shift; return Value; }
-        friend constexpr Bigint_t<Bits> &operator|=(Bigint_t<Bits> &Left, const uint64_t &Right) { Left = Left | Right; return Left; }
-        friend constexpr Bigint_t<Bits> &operator&=(Bigint_t<Bits> &Left, const uint64_t &Right) { Left = Left & Right; return Left; }
-        friend constexpr Bigint_t<Bits> &operator^=(Bigint_t<Bits> &Left, const uint64_t &Right) { Left = Left ^ Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator|=(Bigint_t<Bits> &Left, const uint64_t Right) { Left = Left | Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator&=(Bigint_t<Bits> &Left, const uint64_t Right) { Left = Left & Right; return Left; }
+        friend constexpr Bigint_t<Bits> &operator^=(Bigint_t<Bits> &Left, const uint64_t Right) { Left = Left ^ Right; return Left; }
         friend constexpr Bigint_t<Bits> &operator|=(Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right) { Left = Left | Right; return Left; }
         friend constexpr Bigint_t<Bits> &operator&=(Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right) { Left = Left & Right; return Left; }
         friend constexpr Bigint_t<Bits> &operator^=(Bigint_t<Bits> &Left, const Bigint_t<Bits> &Right) { Left = Left ^ Right; return Left; }
@@ -252,17 +252,17 @@ namespace qDSA::Bigint
     using namespace Detail;
 
     // Need some constant-time comparators.
-    constexpr bool LT(const uint64_t &X, const uint64_t &Y)
+    constexpr bool LT(const uint64_t X, const uint64_t Y)
     {
         return (X ^ ((X ^ Y) | ((X - Y) ^ Y))) >> 63;
     }
-    constexpr bool isZero(const uint64_t &Value)
+    constexpr bool isZero(const uint64_t Value)
     {
         return 1 ^ ((Value | (0 - Value)) >> 63);
     }
 
     // Could be replaced with intrinsics / assembly later. TODO(tcn): Benchmark.
-    constexpr std::pair<uint64_t, bool> ADDC(const uint64_t &X, const uint64_t &Y, bool Carry = false)
+    constexpr std::pair<uint64_t, bool> ADDC(const uint64_t X, const uint64_t Y, bool Carry = false)
     {
         const auto Temp = X + Carry;
         const auto Sum = Temp + Y;
@@ -270,7 +270,7 @@ namespace qDSA::Bigint
 
         return { Sum, Overflow };
     }
-    constexpr std::pair<uint64_t, bool> SUBC(const uint64_t &X, const uint64_t &Y, bool Borrow = false)
+    constexpr std::pair<uint64_t, bool> SUBC(const uint64_t X, const uint64_t Y, bool Borrow = false)
     {
         const auto Temp = X - Y;
         const auto Underflow = LT(X, Y) | (Borrow & isZero(Temp));
@@ -280,12 +280,12 @@ namespace qDSA::Bigint
     }
 
     // Heavy enough that we should extract and optimize.
-    constexpr uint128_t Product(const uint64_t &X, const uint64_t &Y)
+    constexpr uint128_t Product(const uint64_t X, const uint64_t Y)
     {
         // Constexpr fallback.
-        auto Product_fallback = [](const uint64_t &X, const uint64_t &Y) -> Bigint_t<128>
+        auto Product_fallback = [](const uint64_t X, const uint64_t Y) -> Bigint_t<128>
         {
-            const uint64_t Lowmask = 0xFFFFFFFFULL;
+            constexpr uint64_t Lowmask = 0xFFFFFFFFULL;
             const uint32_t XLow = X & Lowmask, XHigh = X >> 32;
             const uint32_t YLow = Y & Lowmask, YHigh = Y >> 32;
 
@@ -297,7 +297,6 @@ namespace qDSA::Bigint
             const auto M1 = B10 + (B00 >> 32);
             const auto M2 = B01 + (M1 & Lowmask);
 
-            // Maybe need an ADDC?
             const uint64_t High = B11 + (M1 >> 32) + (M2 >> 32);
             const uint64_t Low = ((M2 & Lowmask) << 32) | (B00 & Lowmask);
 
@@ -309,7 +308,7 @@ namespace qDSA::Bigint
 
         // x64
         #if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
-        uint64_t Low{}, High{};
+        uint64_t Low, High;
         asm(
             "mulq %3\n\t"
             : "=a"(Low), "=d"(High)
@@ -318,7 +317,7 @@ namespace qDSA::Bigint
 
         // AArch64
         #elif (defined(__GNUC__) || defined(__clang__)) && defined(__aarch64__)
-        uint64_t Low{}, High{};
+        uint64_t Low, High;
         asm(
             "mul %0, %2, %3\n\t"
             "umulh %1, %2, %3\n\t"
@@ -328,7 +327,7 @@ namespace qDSA::Bigint
 
         // x64
         #elif defined(_MSC_VER) && defined(_M_X64)
-        uint64_t Low{}, High{};
+        uint64_t Low, High;
         Low = _umul128(X, Y, &High);
         return { Low, High };
 
@@ -343,7 +342,7 @@ namespace qDSA::Bigint
     }
 
     // Optimized for common case of small inputs.
-    template <size_t Bits> constexpr std::pair<Bigint_t<Bits>, bool> ADDC(const Bigint_t<Bits> &Left, const uint64_t &Right, uint8_t Offset = 0)
+    template <size_t Bits> constexpr std::pair<Bigint_t<Bits>, bool> ADDC(const Bigint_t<Bits> &Left, const uint64_t Right, uint8_t Offset = 0)
     {
         Bigint_t<Bits> Result{ Left };
         bool Carry = false;
@@ -357,7 +356,7 @@ namespace qDSA::Bigint
 
         return { Result, Carry };
     }
-    template <size_t Bits> constexpr std::pair<Bigint_t<Bits>, bool> SUBC(const Bigint_t<Bits> &Left, const uint64_t &Right, uint8_t Offset = 0)
+    template <size_t Bits> constexpr std::pair<Bigint_t<Bits>, bool> SUBC(const Bigint_t<Bits> &Left, const uint64_t Right, uint8_t Offset = 0)
     {
         Bigint_t<Bits> Result{ Left };
         bool Borrow = false;
@@ -371,7 +370,7 @@ namespace qDSA::Bigint
 
         return { Result, Borrow };
     }
-    template <size_t Bits> constexpr Bigint_t<Bits * 2> MUL(const Bigint_t<Bits> &Left, const uint64_t &Right)
+    template <size_t Bits> constexpr Bigint_t<Bits * 2> MUL(const Bigint_t<Bits> &Left, const uint64_t Right)
     {
         Bigint_t<Bits * 2> Result{};
         uint64_t Temp = 0;
@@ -501,14 +500,14 @@ namespace qDSA::Fieldelements
         {
             // ADDC(*this, _bittestandreset64((*this)[1], 63));
             const uint64_t MSB = Bigint::getMSB(*this);
-            const auto Clear = Bigint::setMSB(*this, 0);
+            const auto Clear = Bigint::setMSB(*this, false);
             return Bigint::ADDC(Clear, MSB).first;
         }
         constexpr FE1271_t Reduce_sub() const
         {
             // SUBC(*this, _bittestandreset64((*this)[1], 63));
             const uint64_t MSB = Bigint::getMSB(*this);
-            const auto Clear = Bigint::setMSB(*this, 0);
+            const auto Clear = Bigint::setMSB(*this, false);
             return Bigint::SUBC(Clear, MSB).first;
         }
         constexpr FE1271_t Reduce_full() const
@@ -573,8 +572,8 @@ namespace qDSA::Fieldelements
         // Need to check against both zero and the prime.
         constexpr bool isZero() const
         {
-            const FE1271_t Prime = { uint64_t(-1), uint64_t(-1) >> 1 };
-            const FE1271_t Zero{};
+            constexpr FE1271_t Prime = { uint64_t(-1), uint64_t(-1) >> 1 };
+            constexpr FE1271_t Zero{};
 
             const bool isPrime = ((*this)[0] == Prime[0]) & ((*this)[1] == Prime[1]);
             const bool isZero = ((*this)[0] == Zero[0]) & ((*this)[1] == Zero[1]);
@@ -602,23 +601,23 @@ namespace qDSA::Fieldelements
             const auto [Low, High] = cmp::splitArray<2>(Bigint::MUL(Left, Right));
             const uint128_t Overflow = (uint128_t(High) << 1) | Bigint::getMSB(uint128_t(Low));
 
-            return FE1271_t{ Bigint::setMSB(uint128_t(Low), 0) } + FE1271_t{ Overflow };
+            return FE1271_t{ Bigint::setMSB(uint128_t(Low), false) } + FE1271_t{ Overflow };
         }
 
-        friend constexpr FE1271_t operator+(const FE1271_t &Left, const uint64_t &Right)
+        friend constexpr FE1271_t operator+(const FE1271_t &Left, const uint64_t Right)
         {
             return FE1271_t{ Bigint::ADDC(Left, Right).first }.Reduce_add();
         }
-        friend constexpr FE1271_t operator-(const FE1271_t &Left, const uint64_t &Right)
+        friend constexpr FE1271_t operator-(const FE1271_t &Left, const uint64_t Right)
         {
             return FE1271_t{ Bigint::SUBC(Left, Right).first }.Reduce_sub();
         }
-        friend constexpr FE1271_t operator*(const FE1271_t &Left, const uint64_t &Right)
+        friend constexpr FE1271_t operator*(const FE1271_t &Left, const uint64_t Right)
         {
             const auto [Low, High] = cmp::splitArray<2>(Bigint::MUL(Left, Right));
             const uint128_t Overflow = (uint128_t(High) << 1) | Bigint::getMSB(uint128_t(Low));
 
-            return FE1271_t{ Bigint::setMSB(uint128_t(Low), 0) } + FE1271_t{ Overflow };
+            return FE1271_t{ Bigint::setMSB(uint128_t(Low), false) } + FE1271_t{ Overflow };
         }
 
         // Compound operators, should be optimized out.
@@ -627,11 +626,11 @@ namespace qDSA::Fieldelements
         friend constexpr FE1271_t &operator+=(FE1271_t &Left, const FE1271_t &Right) { Left = Left + Right; return Left; }
         friend constexpr FE1271_t &operator-=(FE1271_t &Left, const FE1271_t &Right) { Left = Left - Right; return Left; }
         friend constexpr FE1271_t &operator*=(FE1271_t &Left, const FE1271_t &Right) { Left = Left * Right; return Left; }
-        friend constexpr FE1271_t &operator+=(FE1271_t &Left, const uint64_t &Right) { Left = Left + Right; return Left; }
-        friend constexpr FE1271_t &operator-=(FE1271_t &Left, const uint64_t &Right) { Left = Left - Right; return Left; }
-        friend constexpr FE1271_t &operator*=(FE1271_t &Left, const uint64_t &Right) { Left = Left * Right; return Left; }
-        friend constexpr FE1271_t &operator|=(FE1271_t &Left, const uint64_t &Right) { Left = Left | Right; return Left; }
-        friend constexpr FE1271_t &operator&=(FE1271_t &Left, const uint64_t &Right) { Left = Left & Right; return Left; }
+        friend constexpr FE1271_t &operator+=(FE1271_t &Left, const uint64_t Right) { Left = Left + Right; return Left; }
+        friend constexpr FE1271_t &operator-=(FE1271_t &Left, const uint64_t Right) { Left = Left - Right; return Left; }
+        friend constexpr FE1271_t &operator*=(FE1271_t &Left, const uint64_t Right) { Left = Left * Right; return Left; }
+        friend constexpr FE1271_t &operator|=(FE1271_t &Left, const uint64_t Right) { Left = Left | Right; return Left; }
+        friend constexpr FE1271_t &operator&=(FE1271_t &Left, const uint64_t Right) { Left = Left & Right; return Left; }
     };
 
     using Compressedpoint_t = std::array<FE1271_t, 2>;
@@ -663,7 +662,7 @@ namespace qDSA::Scalar
         Buffer[4] = (Buffer[4] << 6) | ((Buffer[3] & 0xFC00000000000000ULL) >> 58);
         Buffer[3] &= 0x03FFFFFFFFFFFFFFULL;
 
-        for (uint8_t i = 0; i < 1; ++i)
+        // Single iteration.
         {
             const auto [Blo, Bhi] = cmp::splitArray<4>(Buffer);
             const auto [Plo, Phi] = cmp::splitArray<4>(MUL(uint256_t(Bhi), L0));
@@ -675,7 +674,7 @@ namespace qDSA::Scalar
         Buffer[4] = (Buffer[3] & 0x0400000000000000ULL) >> 58;
         Buffer[3] &= 0x03FFFFFFFFFFFFFFULL;
 
-        for (uint8_t i = 0; i < 1; ++i)
+        // Single iteration.
         {
             const auto [Blo, Bhi] = cmp::splitArray<4>(Buffer);
             const auto [Plo, Phi] = cmp::splitArray<4>(MUL(uint256_t(Bhi), L0));
@@ -774,14 +773,6 @@ namespace qDSA::Algorithm
         const auto D = Value[2] - Value[3];
 
         return { A + B, A - B, D - C, C + D };
-
-        return
-        {
-            Value[0] + Value[1] + Value[2] + Value[3],
-            Value[0] + Value[1] - Value[2] - Value[3],
-            Value[0] - Value[1] + Value[2] - Value[3],
-            Value[0] - Value[1] - Value[2] + Value[3]
-        };
     }
     constexpr Kummerpoint_t negHadamard(const Kummerpoint_t &Value)
     {
@@ -881,13 +872,13 @@ namespace qDSA::Algorithm
     constexpr Kummerpoint_t Ladder(Kummerpoint_t Q, const Kummerpoint_t &Wrapped, const std::array<uint8_t, 32> &Scalar)
     {
         auto P = Kummerpoint_t{ Mu[0], Mu[1], Mu[2], Mu[3] };
-        uint8_t Previous = false;
+        bool Previous = false;
 
         // While the algorithm calls for 256 bits, we can save 6 iterations.
         for (int i = 250; i >= 0; --i)
         {
-            const auto Bit = (Scalar[i >> 3] >> (i & 0x07)) & 1;
-            const auto Swap = Bit ^ Previous;
+            const bool Bit = (Scalar[i >> 3] >> (i & 0x07)) & 1;
+            const bool Swap = Bit ^ Previous;
             Previous = Bit;
 
             // Negate X.
@@ -1022,7 +1013,7 @@ namespace qDSA::Algorithm
 
         // We store the sign of compressed values in the top bit.
         const auto Tau = Bigint::getMSB(Input[0]), Sigma = Bigint::getMSB(Input[1]);
-        const FE1271_t L1 = Bigint::setMSB(Input[0], 0), L2 = Bigint::setMSB(Input[1], 0);
+        const FE1271_t L1 = Bigint::setMSB(Input[0], false), L2 = Bigint::setMSB(Input[1], false);
 
         // Evaluate the polynomials.
         const auto K2 = evalK2(L1, L2, Tau);
@@ -1055,8 +1046,6 @@ namespace qDSA::Algorithm
         {
             const auto Delta = (K3 * K3) - (K2 * K4);
             auto [R, Valid] = Delta.trySQRT();
-
-            // TODO TODO TEST REMOVE SIGN
 
             // Select the right root.
             if (Bigint::getLSB(R) ^ Sigma)
